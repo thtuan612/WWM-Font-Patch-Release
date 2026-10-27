@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Release CI supplies the keystore file and passwords through environment variables.
+def ksFile = rootProject.file('keystore/release.jks')
+def ksStorePassword = System.getenv('RELEASE_STORE_PASSWORD')
+def ksKeyPassword = System.getenv('RELEASE_KEY_PASSWORD')
+
+android {
+    namespace 'local.wwm.fontpatch'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'local.wwm.fontpatch'
+        minSdk 26
+        targetSdk 34
+        versionCode 100
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        release {
+            if (ksFile.exists()) {
+                storeFile ksFile
+                storePassword ksStorePassword
+                keyAlias 'fontpatch'
+                keyPassword ksKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ksFile.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+dependencies {
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+}
