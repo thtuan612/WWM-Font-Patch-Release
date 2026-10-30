@@ -28,23 +28,33 @@ final class Glass {
 
     // ---- tham số hình ảnh (chỉnh ở đây) ----
     /** Độ mờ nền phía sau kính (dp). KernelSU dùng 4; để cao hơn một chút cho chữ nav dễ đọc trên nền có chữ. */
-    static final float BLUR_DP = 8f;
+    static final float BLUR_DP = 12f;
     /** Độ bão hòa màu nền phía sau kính (1 = giữ nguyên). */
-    static final float SATURATION = 1.5f;
+    static final float SATURATION = 1.25f;
     /** Alpha lớp phủ màu của thanh (0..255). */
-    static final int TINT_ALPHA = 0x66;
+    static final int TINT_ALPHA = 0x80;
     /** Khúc xạ mép của cả thanh (dp): bề dày dải khúc xạ và độ lệch tối đa. */
-    static final float BAR_REFRACTION_DP = 24f;
+    static final float BAR_REFRACTION_DP = 14f;
     /** Khúc xạ của ô chọn khi đang nhấn/kéo (dp). */
-    static final float PILL_REFRACTION_HEIGHT_DP = 10f;
-    static final float PILL_REFRACTION_AMOUNT_DP = 14f;
+    static final float PILL_REFRACTION_HEIGHT_DP = 16f;
+    static final float PILL_REFRACTION_AMOUNT_DP = 22f;
     /** Độ tán sắc của ô chọn khi đang nhấn/kéo. */
-    static final float PILL_CHROMA = 0.5f;
+    static final float PILL_CHROMA = 0.28f;
+    /** Phóng đại ở giữa thấu kính khi nhấn hết cỡ (0.28 = 1.28x): nội dung bên dưới được shader phóng lên rồi bẻ cong ở mép. */
+    static final float LENS_MAGNIFY = 0.28f;
+    static final float SEG_LENS_MAGNIFY = 0.2f;
     /** Hệ số phóng ô chọn khi nhấn (78dp / 56dp như bản gốc). */
-    static final float PRESSED_SCALE = 78f / 56f;
+    static final float PRESSED_SCALE = 1.3f;
+    /** Thấu kính khi nhấn: dài ra theo trục của thanh so với một mục, và cao gấp bao nhiêu lần bề dày thanh (>1 = nhô ra hai phía). */
+    static final float LENS_ALONG = 1.4f;
+    static final float LENS_OVERSHOOT = 1.18f;
     /** Thanh chọn ngang (FPS, giao diện): ô nhỏ hơn thanh nav nên phóng và khúc xạ nhẹ tay hơn. */
-    static final float SEG_PRESSED_SCALE = 1.3f;
-    static final float SEG_LENS_SCALE = 0.8f;
+    static final float SEG_PRESSED_SCALE = 1.2f;
+    /** Thanh chọn: thấu kính dài ra so với một ô, cao gấp bao nhiêu lần bề dày thanh (>1 = nhô ra hai phía), và độ mờ nền kính (dp). */
+    static final float SEG_LENS_ALONG = 1.22f;
+    static final float SEG_LENS_OVERSHOOT = 1.22f;
+    static final float SEG_BLUR_DP = 3f;
+    static final float SEG_LENS_SCALE = 0.75f;
 
     private Glass() { }
 
@@ -102,7 +112,8 @@ final class Glass {
             + "uniform float4 cornerRadii;\n"
             + "uniform float refractionHeight;\n"
             + "uniform float refractionAmount;\n"
-            + "uniform float depthEffect;\n";
+            + "uniform float depthEffect;\n"
+            + "uniform float magnification;\n";
 
     /**
      * Phần chung: tính toạ độ đã khúc xạ (refractedCoord) hoặc trả về nguyên bản nếu ở sâu bên trong.
@@ -115,18 +126,20 @@ final class Glass {
             + "    float radius = radiusAt(centeredCoord, cornerRadii);\n"
             + "    float sd = sdRoundedRect(centeredCoord, halfSize, radius);\n"
             + "    float cov = clamp(0.5 - sd, 0.0, 1.0);\n"
+            // phóng đại: kéo toạ độ lấy mẫu về tâm thấu kính (magnification = 1 thì không đổi). Luôn lấy mẫu trong hình.
+            + "    float2 zoomed = coord - centeredCoord * (1.0 - 1.0 / max(magnification, 1.0));\n"
             + "    if (cov <= 0.0) {\n"
             + "        return half4(0.0);\n"
             + "    }\n"
             + "    if (-sd >= refractionHeight) {\n"
-            + "        return content.eval(coord) * half(cov);\n"
+            + "        return content.eval(zoomed) * half(cov);\n"
             + "    }\n"
             + "    sd = min(sd, 0.0);\n"
             + "    float d = circleMap(1.0 - -sd / refractionHeight) * refractionAmount;\n"
             + "    float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));\n"
             + "    float2 grad = nrm(gradSdRoundedRect(centeredCoord, halfSize, gradRadius)"
             + " + depthEffect * nrm(centeredCoord));\n"
-            + "    float2 refractedCoord = coord + d * grad;\n";
+            + "    float2 refractedCoord = zoomed + d * grad;\n";
 
     private static final String LENS = UNIFORMS + "\n" + SDF + "\n"
             + "half4 main(float2 coord) {\n"
@@ -138,14 +151,17 @@ final class Glass {
             + "uniform float chromaticAberration;\n\n" + SDF + "\n"
             + "half4 main(float2 coord) {\n"
             + REFRACT
+            // tán sắc chạy quanh cả viền (nền 0.55) và mạnh hơn ở các góc chéo, luôn cùng một chiều màu
             + "    float dispersionIntensity = chromaticAberration"
-            + " * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y));\n"
+            + " * (0.55 + 0.45 * ((centeredCoord.x * centeredCoord.y) / (halfSize.x * halfSize.y)));\n"
             + "    float2 dispersedCoord = d * grad * dispersionIntensity;\n"
             + "\n"
             + "    half4 color = half4(0.0);\n"
             + "\n"
             + "    half4 red = content.eval(refractedCoord + dispersedCoord);\n"
-            + "    color.r += red.r / 3.5;\n"
+            // dải tán sắc đỏ -> xanh dương, không có đầu mút tím: kênh đỏ của mẫu cuối (cũ là "purple") dồn về mẫu đỏ,
+            // nên tổng trọng số mỗi kênh vẫn bằng 1 (3/7 + 2/7 + 2/7 = 1)
+            + "    color.r += red.r * 0.428571;\n"
             + "    color.a += red.a / 7.0;\n"
             + "\n"
             + "    half4 orange = content.eval(refractedCoord + dispersedCoord * (2.0 / 3.0));\n"
@@ -171,10 +187,9 @@ final class Glass {
             + "    color.b += blue.b / 3.0;\n"
             + "    color.a += blue.a / 7.0;\n"
             + "\n"
-            + "    half4 purple = content.eval(refractedCoord - dispersedCoord);\n"
-            + "    color.r += purple.r / 7.0;\n"
-            + "    color.b += purple.b / 3.0;\n"
-            + "    color.a += purple.a / 7.0;\n"
+            + "    half4 tail = content.eval(refractedCoord - dispersedCoord);\n"
+            + "    color.b += tail.b / 3.0;\n"
+            + "    color.a += tail.a / 7.0;\n"
             + "\n"
             + "    return color * half(cov);\n"
             + "}\n";
@@ -195,7 +210,7 @@ final class Glass {
     @TargetApi(33)
     static RenderEffect lens(RuntimeShader s, boolean dispersion, float w, float h, float left, float top,
                              float radius, float refractionHeight, float refractionAmount,
-                             float depthEffect, float chroma) {
+                             float depthEffect, float chroma, float magnification) {
         float r = Math.min(radius, Math.min(w, h) / 2f);
         s.setFloatUniform("size", w, h);
         s.setFloatUniform("offset", -left, -top);
@@ -203,6 +218,7 @@ final class Glass {
         s.setFloatUniform("refractionHeight", refractionHeight);
         s.setFloatUniform("refractionAmount", -refractionAmount);   // âm: lấy mẫu từ phía trong, mép cong như thấu kính
         s.setFloatUniform("depthEffect", depthEffect);
+        s.setFloatUniform("magnification", Math.max(1f, magnification));
         if (dispersion) s.setFloatUniform("chromaticAberration", chroma);
         return RenderEffect.createRuntimeShaderEffect(s, "content");
     }

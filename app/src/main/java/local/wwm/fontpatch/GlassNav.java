@@ -4,6 +4,7 @@ import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.graphics.Paint;
@@ -19,6 +20,7 @@ import android.graphics.RuntimeShader;
 import android.graphics.Shader;
 import android.graphics.SweepGradient;
 import android.util.Log;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -72,6 +74,8 @@ final class GlassNav extends ViewGroup {
     private final Listener listener;
 
     private final RenderNode pillNode = new RenderNode("glass-pill");
+    /** Nền kính của thấu kính: rộng hơn thanh (gồm cả vùng nhô ra), mờ nhưng không khúc xạ mép thanh. */
+    private final RenderNode lensNode = new RenderNode("glass-lens");
     private final PillView pill;
     private final IndicatorView ind;
     private final RimView rim;
@@ -103,7 +107,21 @@ final class GlassNav extends ViewGroup {
 
     // hình dạng ô chọn hiện tại (toạ độ của GlassNav)
     private final RectF rect = new RectF();
+    private final Path thumb = new Path();    // cùng hình ô chọn, để khoét hàng nút thật bên dưới
+    private final Path barShape = new Path();     // viên thuốc của cả thanh (toạ độ GlassNav): vùng tô kính
+    private final Path barBorder = new Path();    // viền của thanh, thụt vào nửa nét
     private float radius;
+    /**
+     * Bán kính bo của cả thanh: bán kính ô chọn lúc nghỉ + khoảng hở từ ô tới mép thanh, để cung của thanh và cung của ô
+     * đồng tâm. Thanh ngang (ô dài hơn cao) vẫn ra đúng hình viên thuốc; thanh dọc (ô thấp hơn rộng) bo nhỏ hơn chút
+     * thay vì nửa bề dày, nếu không khe giữa hai cung phình ra ở hai góc cuối.
+     */
+    private float barR = -1f;
+
+    private float barRadius(float w, float h) {
+        float cap = Math.min(w, h) / 2f;
+        return barR > 0f ? Math.min(cap, barR) : cap;
+    }
 
     private final Runnable tick = new Runnable() {
         @Override public void run() { step(); }
@@ -132,17 +150,31 @@ final class GlassNav extends ViewGroup {
         this.vertical = vertical;
         dp = c.getResources().getDisplayMetrics().density;
         // ô chọn tràn nhiều theo trục của thanh, ít theo trục vuông góc
-        padX = Math.round((vertical ? 12f : 40f) * dp);
-        padY = Math.round((vertical ? 40f : 12f) * dp);
+        // chừa đủ chỗ cho thấu kính nhô ra ngoài thanh (phóng 1.4x dọc trục, ~1.2x ngang trục) cộng độ nảy của lò xo,
+        // viền sáng và vùng làm mờ của bóng trong; thiếu chỗ thì thấu kính bị cắt phẳng ở mép view
+        padX = Math.round((vertical ? 24f : 48f) * dp);
+        padY = Math.round((vertical ? 48f : 24f) * dp);
         slop = ViewConfiguration.get(c).getScaledTouchSlop();
         index.snap(initial);
 
         setClipChildren(false);
         setClipToPadding(false);
+        // bóng đổ mềm dưới thanh: thanh trông như nổi lên khỏi nội dung. alpha = 1 để bóng chỉ hiện bên ngoài viên thuốc.
+        setOutlineProvider(new ViewOutlineProvider() {
+            @Override public void getOutline(View v, Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), barRadius(v.getWidth(), v.getHeight()));
+                o.setAlpha(1f);
+            }
+        });
+        setElevation(14f * dp);
+        setOutlineAmbientShadowColor(0x66000000);
+        setOutlineSpotShadowColor(0x99000000);
 
         pill = new PillView(c);
         ind = new IndicatorView(c);
         rim = new RimView(c);
+        accent.setClipChildren(false);          // mục phóng 1.2x khi nhấn không được bị cắt ở mép hàng
+        accent.setClipToPadding(false);
         accent.setVisibility(INVISIBLE);
         accent.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         ind.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -192,18 +224,14 @@ final class GlassNav extends ViewGroup {
     protected void onMeasure(int wSpec, int hSpec) {
         int w;
         int h;
-        if (vertical) {
-            // thanh dọc: kích thước do hàng nút quyết định cả hai chiều (mục nav có kích thước cố định)
-            row.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
-                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
-            w = row.getMeasuredWidth();
-            h = row.getMeasuredHeight();
-        } else {
-            w = MeasureSpec.getSize(wSpec);
-            row.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
-            h = row.getMeasuredHeight();
-        }
+        // kích thước do hàng nút quyết định cả hai chiều (mục nav có bề rộng cố định) nên thanh ngang cũng co gọn;
+        // chỉ bị chặn bởi chỗ cha cho phép
+        row.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+        w = row.getMeasuredWidth();
+        h = row.getMeasuredHeight();
+        int avail = MeasureSpec.getSize(wSpec);
+        if (!vertical && MeasureSpec.getMode(wSpec) != MeasureSpec.UNSPECIFIED && avail > 0) w = Math.min(w, avail);
         int exactW = MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY);
         int exactH = MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY);
         row.measure(exactW, exactH);
@@ -249,17 +277,29 @@ final class GlassNav extends ViewGroup {
     }
 
     private void buildPill(int w, int h) {
+        // len/cross/c0 đã đo xong ở onLayout: c0 = khoảng hở từ mép thanh tới ô chọn theo trục vuông góc
+        barR = Math.min(Math.min(w, h) / 2f, Math.min(len, cross) / 2f + Math.max(0f, c0));
+        invalidateOutline();
+        pill.invalidateOutline();
         RenderEffect lens = null;
         try {
             RuntimeShader s = Glass.newLens(false);
-            float cr = Math.min(w, h) / 2f;   // hình viên thuốc: bo theo cạnh ngắn
+            float cr = barR;
             lens = Glass.lens(s, false, w, h, 0f, 0f, cr,
-                    Glass.BAR_REFRACTION_DP * dp, Glass.BAR_REFRACTION_DP * dp, 0f, 0f);
+                    Glass.BAR_REFRACTION_DP * dp, Glass.BAR_REFRACTION_DP * dp, 0f, 0f, 1f);
         } catch (RuntimeException e) {
             Log.w(TAG, "glass: lens shader unavailable, blur only", e);
         }
+        float br = barR;
+        float bin = Math.max(1f, 1.5f * dp) / 2f;
+        barShape.reset();
+        barShape.addRoundRect(0f, 0f, w, h, br, br, Path.Direction.CW);
+        barBorder.reset();
+        barBorder.addRoundRect(bin, bin, w - bin, h - bin, br - bin, br - bin, Path.Direction.CW);
         pillNode.setPosition(0, 0, w, h);
         pillNode.setRenderEffect(Glass.backdrop(Glass.BLUR_DP * dp, lens));
+        lensNode.setPosition(0, 0, w + 2 * padX, h + 2 * padY);
+        lensNode.setRenderEffect(Glass.backdrop(Glass.BLUR_DP * dp, null));
         pill.rebuildGlow(w, h);
         builtW = w;
         builtH = h;
@@ -271,8 +311,14 @@ final class GlassNav extends ViewGroup {
         if (!Anim.on()) return;
         pendingRelease = false;
         press.target = 1f;
-        sx.target = Glass.PRESSED_SCALE;
-        sy.target = Glass.PRESSED_SCALE;
+        sx.target = Glass.LENS_ALONG;
+        sy.target = crossTarget();
+    }
+
+    /** Hệ số phóng theo trục vuông góc để thấu kính cao hơn cả thanh (nhô lên/xuống), tính từ bề dày thanh thật. */
+    private float crossTarget() {
+        float bar = vertical ? getWidth() : getHeight();
+        return cross > 0f && bar > 0f ? Math.max(1f, bar * Glass.LENS_OVERSHOOT / cross) : Glass.PRESSED_SCALE;
     }
 
     private void release() {
@@ -340,18 +386,31 @@ final class GlassNav extends ViewGroup {
             rect.set(along - ha, across - hc, along + ha, across + hc);
         }
         radius = Math.min(ha, hc);
+        thumb.reset();
+        thumb.addRoundRect(rect, radius, radius, Path.Direction.CW);
 
-        // chữ/icon bên trong ô chọn phóng 1.2x khi nhấn
-        float s = 1f + 0.2f * press.value;
-        for (int i = 0; i < accent.getChildCount(); i++) {
-            View it = accent.getChildAt(i);
-            it.setScaleX(s);
-            it.setScaleY(s);
-        }
+        // chữ/icon trong ô được shader phóng đại (Glass.LENS_MAGNIFY) cùng với phần bẻ cong ở mép, không phóng tay từng view nữa
         ind.applyLens();
     }
 
+    /**
+     * Hàng nút thật bị khoét đúng hình ô chọn: trong ô đã có bản sao chữ/icon màu accent (có khúc xạ),
+     * nếu không khoét thì chữ thật nằm dưới sẽ lộ ra và thành hai lớp chữ chồng lệch nhau.
+     */
+    @Override
+    protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
+        if (child == row && ready && canvas.isHardwareAccelerated()) {
+            canvas.save();
+            canvas.clipOutPath(thumb);
+            boolean r = super.drawChild(canvas, child, drawingTime);
+            canvas.restore();
+            return r;
+        }
+        return super.drawChild(canvas, child, drawingTime);
+    }
+
     private void invalidateAll() {
+        invalidate();       // vẽ lại hàng nút với vết khoét mới
         pill.invalidate();
         ind.invalidate();
         rim.invalidate();
@@ -367,6 +426,8 @@ final class GlassNav extends ViewGroup {
     private static float clamp(float v, float lo, float hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     }
+
+    private boolean dark() { return pal.dark; }
 
     // ---------------------------------------------------------------- cảm ứng
 
@@ -398,8 +459,20 @@ final class GlassNav extends ViewGroup {
         lastP = p;
         removeCallbacks(settle);
         index.target = indexAt(p);      // ô chọn chạy ngay tới tab đang chạm và phồng lên
+        tickIdx = selected;
+        tickIfChanged();
         press();
         kick();
+    }
+
+    /** Phản hồi rung nhẹ mỗi khi ô kính đi qua sang một mục khác (chạm hoặc kéo), như thanh chọn của iOS. */
+    private int tickIdx = -1;
+
+    private void tickIfChanged() {
+        int i = Math.round(index.target);
+        if (i == tickIdx) return;
+        tickIdx = i;
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
     }
 
     private void endTouch() {
@@ -432,6 +505,7 @@ final class GlassNav extends ViewGroup {
                     float d = pos(e) - lastP;
                     lastP = pos(e);
                     index.target = clamp(index.target + d / len, 0f, count - 1);
+                    tickIfChanged();
                     kick();
                 }
                 break;
@@ -466,6 +540,7 @@ final class GlassNav extends ViewGroup {
         private final int[] a = new int[2];
         private final int[] b = new int[2];
         private RadialGradient glowShader;
+        private final Paint sheen = new Paint();
 
         PillView(Context c) {
             super(c);
@@ -473,7 +548,7 @@ final class GlassNav extends ViewGroup {
             setOutlineProvider(new ViewOutlineProvider() {
                 @Override public void getOutline(View v, Outline o) {
                     // viên thuốc: bo theo cạnh ngắn (thanh ngang -> chiều cao, thanh dọc -> chiều rộng)
-                    o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), Math.min(v.getWidth(), v.getHeight()) / 2f);
+                    o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), barRadius(v.getWidth(), v.getHeight()));
                 }
             });
             tint.setColor((pal.nav & 0x00FFFFFF) | (Glass.TINT_ALPHA << 24));
@@ -488,6 +563,12 @@ final class GlassNav extends ViewGroup {
             int on = Color.argb(Math.round(255 * 0.12f), 255, 255, 255);
             glowShader = new RadialGradient(0f, 0f, r, new int[]{on, on, on & 0x00FFFFFF},
                     new float[]{0f, 0.5f, 1f}, Shader.TileMode.CLAMP);
+            // ánh sáng từ trên xuống (thanh ngang) hoặc từ trái sang (thanh dọc): mặt kính hơi sáng ở mép đón sáng
+            int top = Color.argb(Math.round(255 * (dark() ? 0.10f : 0.35f)), 255, 255, 255);
+            int none = Color.argb(0, 255, 255, 255);
+            sheen.setShader(vertical
+                    ? new LinearGradient(0f, 0f, w * 0.7f, 0f, top, none, Shader.TileMode.CLAMP)
+                    : new LinearGradient(0f, 0f, 0f, h * 0.7f, top, none, Shader.TileMode.CLAMP));
         }
 
         @Override
@@ -508,6 +589,7 @@ final class GlassNav extends ViewGroup {
                 }
                 canvas.drawRenderNode(pillNode);
                 canvas.drawRect(0f, 0f, w, h, tint);
+                canvas.drawRect(0f, 0f, w, h, sheen);
 
                 float p = press.value;
                 if (p > 0.002f && glowShader != null) {
@@ -532,12 +614,19 @@ final class GlassNav extends ViewGroup {
         private final Paint tint = new Paint();
         private final Paint surface = new Paint();
         private final Path clip = new Path();
+        private final int[] a = new int[2];
+        private final int[] b = new int[2];
+        private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final GlassFx fx = new GlassFx(dp);
         private RuntimeShader lensShader;
         private boolean lensOn;
 
         IndicatorView(Context c) {
             super(c);
             tint.setColor((pal.nav & 0x00FFFFFF) | (Glass.TINT_ALPHA << 24));
+            border.setStyle(Paint.Style.STROKE);
+            border.setStrokeWidth(Math.max(1f, 1.5f * dp));
+            border.setColor(pal.dark ? 0x59FFFFFF : 0x40000000);
             try {
                 lensShader = Glass.newLens(true);
             } catch (RuntimeException e) {
@@ -559,7 +648,7 @@ final class GlassNav extends ViewGroup {
                 setRenderEffect(Glass.lens(lensShader, true, rect.width(), rect.height(),
                         rect.left + padX, rect.top + padY, radius,
                         Glass.PILL_REFRACTION_HEIGHT_DP * dp * p, Glass.PILL_REFRACTION_AMOUNT_DP * dp * p,
-                        1f, Glass.PILL_CHROMA));
+                        1f, Glass.PILL_CHROMA, 1f + Glass.LENS_MAGNIFY * p));
                 lensOn = true;
             } catch (RuntimeException e) {
                 Log.w(TAG, "glass: indicator lens failed, disabled", e);
@@ -577,21 +666,37 @@ final class GlassNav extends ViewGroup {
                 clip.reset();
                 clip.addRoundRect(rect.left + padX, rect.top + padY, rect.right + padX, rect.bottom + padY,
                         radius, radius, Path.Direction.CW);
-                c.save();
-                c.clipPath(clip);
-                c.translate(padX, padY);                       // từ đây là toạ độ GlassNav
                 int w = GlassNav.this.getWidth();
                 int h = GlassNav.this.getHeight();
-                c.drawRenderNode(pillNode);                    // cùng nền kính với thanh nên liền mạch
-                c.drawRect(0f, 0f, w, h, tint);
+                // nền kính của thấu kính: ghi lại scene phía sau cả phần nhô ra ngoài thanh (node của thanh chỉ rộng bằng thanh)
+                RecordingCanvas rc = lensNode.beginRecording(w + 2 * padX, h + 2 * padY);
+                try {
+                    GlassNav.this.getLocationInWindow(a);
+                    scene.getLocationInWindow(b);
+                    rc.translate(b[0] - a[0] + padX, b[1] - a[1] + padY);
+                    scene.draw(rc);
+                } finally {
+                    lensNode.endRecording();
+                }
+                c.save();
+                c.clipPath(clip);
+                c.drawRenderNode(lensNode);                    // toạ độ view (đã gồm lề padX/padY)
+                c.translate(padX, padY);                       // từ đây là toạ độ GlassNav
+                // kính + viền của thanh vẽ NGAY TRONG ô, trước hiệu ứng khúc xạ: viền thanh đi qua ô sẽ bị bẻ cong theo thấu kính,
+                // còn phần ô nhô ra ngoài thanh chỉ thấy scene (không có kính nền) nên mép thanh hiện rõ qua thấu kính
+                c.drawPath(barShape, tint);
+                c.drawPath(barShape, pill.sheen);
+                c.drawPath(barBorder, border);
                 accent.draw(c);                                // icon + chữ màu accent
                 // lớp bề mặt: nhạt khi nghỉ, gần như trong suốt khi đang nhấn
                 surface.setColor(pal.dark ? Color.WHITE : Color.BLACK);
                 surface.setAlpha(Math.round(255 * 0.1f * (1f - p)));
                 c.drawRect(rect, surface);
-                surface.setColor(Color.BLACK);
-                surface.setAlpha(Math.round(255 * 0.03f * p));
+                surface.setColor(pal.dark ? Color.WHITE : Color.BLACK);
+                surface.setAlpha(Math.round(255 * (pal.dark ? 0.07f : 0.03f) * p));   // nhấn: kính sáng nhẹ lên, không tối sầm
                 c.drawRect(rect, surface);
+                // phản chiếu xanh: có sẵn mờ khi nghỉ, đậm dần khi nhấn
+                fx.reflection(c, rect, (pal.dark ? 0.03f : 0.02f) + (pal.dark ? 0.09f : 0.06f) * p);
                 c.restore();
             } catch (RuntimeException e) {
                 fail(e);
@@ -607,8 +712,9 @@ final class GlassNav extends ViewGroup {
         private final Path shape = new Path();
         private final Path shapeStroke = new Path();
         // ánh sáng chính từ trên-trái (thanh) / bên phải (ô chọn), ánh sáng phụ yếu hơn từ dưới
-        private final SweepGradient barGrad = GlassFx.lobes(225f, 90f, 0.4f);
-        private final SweepGradient indGrad = GlassFx.lobes(0f, 90f, 0.4f);
+        private final SweepGradient barGrad = GlassFx.tintedLobes(225f, 0xFFD6E0FF, 45f, 0xFFD6E0FF, 0.5f);
+        // sáng xanh từ trên-trái, phản chiếu phụ cùng tông xanh ở dưới-phải
+        private final SweepGradient indGrad = GlassFx.tintedLobes(225f, 0xFF86A4FF, 45f, 0xFF86A4FF, 0.85f);
 
         RimView(Context c) {
             super(c);
@@ -626,12 +732,18 @@ final class GlassNav extends ViewGroup {
                 int w = getWidth() - 2 * padX;
                 int h = getHeight() - 2 * padY;
                 float in = sw / 2f;
-                float r = (Math.min(w, h) - sw) / 2f;
+                float r = barRadius(w, h) - sw / 2f;
                 barPath.reset();
                 barPath.addRoundRect(padX + in, padY + in, padX + w - in, padY + h - in, r, r, Path.Direction.CW);
                 stroke.setColor(pal.stroke);
+                // viền thanh nằm dưới thấu kính: khoét đúng hình ô, phần trong ô do chính ô vẽ lại (đã khúc xạ)
+                c.save();
+                c.translate(padX, padY);
+                c.clipOutPath(thumb);
+                c.translate(-padX, -padY);
                 c.drawPath(barPath, stroke);
-                fx.specular(c, barPath, barGrad, padX + w / 2f, padY + h / 2f, 0.75f);
+                fx.specular(c, barPath, barGrad, padX + w / 2f, padY + h / 2f, 0.55f);
+                c.restore();
 
                 // ô chọn: chỉ hiện khi đang nhấn
                 float p = press.value;

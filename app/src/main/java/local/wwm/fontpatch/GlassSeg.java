@@ -5,12 +5,16 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RecordingCanvas;
 import android.graphics.RectF;
+import android.graphics.RenderNode;
 import android.graphics.RuntimeShader;
 import android.graphics.SweepGradient;
+import android.graphics.drawable.Drawable;
 import android.graphics.Typeface;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -26,9 +30,10 @@ import java.util.function.IntConsumer;
  * Bố cục (từ dưới lên): nền thanh (setBackground) → cells (chữ thật, bị khoét đúng chỗ ô kính) →
  * accent (bản sao chữ màu accent, ẩn, chỉ để vẽ vào ô kính) → IndicatorView (ô kính) → RimView (viền sáng, bóng trong).
  *
- * Ô kính chạy bằng cùng bộ lò xo với GlassNav: chạm thì phồng lên, kéo ngang để đổi ô, bị bóp/giãn theo vận tốc,
- * khi nhấn có khúc xạ + tán sắc. Khác thanh nav: thanh này không có nền ảnh để làm mờ, nên ô kính trong suốt
- * và chỉ khúc xạ phần chữ accent bên trong nó.
+ * Ô kính chạy bằng cùng bộ lò xo và cùng cơ chế render với GlassNav: chạm thì phồng lên và nhô ra ngoài thanh,
+ * kéo ngang để đổi ô, bị bóp/giãn theo vận tốc, khi nhấn có khúc xạ + tán sắc + phản chiếu xanh tím.
+ * Nền kính của ô (lensNode) ghi lại thẻ chứa thanh và nền thanh, nên mép thanh/mép thẻ đi qua ô cũng bị bẻ cong
+ * theo thấu kính thay vì lộ nguyên bên dưới.
  *
  * Chuyển thể từ Kyant0/AndroidLiquidGlass (Apache-2.0); xem Glass.java.
  */
@@ -77,6 +82,11 @@ final class GlassSeg extends ViewGroup {
     private float itemTop;
     private float ih;
 
+    /** Nền kính của ô: rộng hơn thanh (gồm cả phần nhô ra), ghi lại thẻ chứa + nền thanh rồi làm mờ nhẹ. */
+    private final RenderNode lensNode = new RenderNode("glass-seg-lens");
+    private int builtW;
+    private int builtH;
+
     private final RectF rect = new RectF();   // ô kính hiện tại
     private final Path thumb = new Path();    // cùng hình đó, để khoét chữ thật
     private float radius;
@@ -98,13 +108,14 @@ final class GlassSeg extends ViewGroup {
         pad = Math.round(4f * dp);
         cellH = Math.round(42f * dp);
         padX = Math.round(28f * dp);
-        padY = Math.round(10f * dp);
+        padY = Math.round(14f * dp);       // chừa chỗ cho ô nhô ra ~6dp mỗi phía + lò xo nảy + viền sáng
         slop = ViewConfiguration.get(c).getScaledTouchSlop();
         index.snap(initial);
 
         setClipChildren(false);
         setClipToPadding(false);
-        setBackground(rounded(pal.field, 18, pal.stroke));
+        // viên thuốc bo tròn trọn hai đầu; viền nằm ở thanh ngoài, ô kính bên trong không viền
+        setBackground(rounded(pal.tonal, 30, (pal.accent & 0x00FFFFFF) | 0x40000000));
 
         cells = new LinearLayout(c);
         accent = new LinearLayout(c);
@@ -148,7 +159,7 @@ final class GlassSeg extends ViewGroup {
         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
         g.setColor(fill);
         g.setCornerRadius(radiusDp * dp);
-        if (stroke != 0) g.setStroke(Math.round(dp), stroke);
+        if (stroke != 0) g.setStroke(Math.round(1.5f * dp), stroke);
         return g;
     }
 
@@ -193,6 +204,12 @@ final class GlassSeg extends ViewGroup {
         x0 = pad;
         itemTop = pad;
         ih = cellH;
+        if (w != builtW || h != builtH) {
+            lensNode.setPosition(0, 0, w + 2 * padX, h + 2 * padY);
+            lensNode.setRenderEffect(Glass.backdrop(Glass.SEG_BLUR_DP * dp, null));
+            builtW = w;
+            builtH = h;
+        }
         ready = true;
         update();
         invalidateAll();
@@ -228,8 +245,8 @@ final class GlassSeg extends ViewGroup {
         if (!Anim.on()) return;
         pendingRelease = false;
         press.target = 1f;
-        sx.target = Glass.SEG_PRESSED_SCALE;
-        sy.target = Glass.SEG_PRESSED_SCALE;
+        sx.target = Glass.SEG_LENS_ALONG;
+        sy.target = ih > 0f ? Math.max(1f, getHeight() * Glass.SEG_LENS_OVERSHOOT / ih) : Glass.SEG_PRESSED_SCALE;
     }
 
     private void release() {
@@ -304,17 +321,12 @@ final class GlassSeg extends ViewGroup {
         float hw = cw * wx / 2f;
         float hh = ih * wy / 2f;
         rect.set(cx - hw, cy - hh, cx + hw, cy + hh);
-        // lúc nghỉ bo như khối sáng cũ (14/21), nhấn thì thành viên thuốc
-        radius = Math.min(hw, hh * (0.667f + 0.333f * clamp(press.value, 0f, 1f)));
+        // luôn là viên thuốc: bo tròn trọn hai đầu cả lúc nghỉ lẫn lúc nhấn
+        radius = Math.min(hw, hh);
         thumb.reset();
         thumb.addRoundRect(rect, radius, radius, Path.Direction.CW);
 
-        float s = 1f + 0.15f * press.value;     // chữ trong ô kính phóng nhẹ khi nhấn
-        for (int i = 0; i < accent.getChildCount(); i++) {
-            View it = accent.getChildAt(i);
-            it.setScaleX(s);
-            it.setScaleY(s);
-        }
+        // chữ trong ô được shader phóng đại (Glass.SEG_LENS_MAGNIFY), không phóng tay từng view nữa
         ind.applyLens();
     }
 
@@ -344,6 +356,16 @@ final class GlassSeg extends ViewGroup {
     }
 
     /** Chốt lựa chọn: đổi màu chữ, đưa ô kính về ô đó, rồi báo ra ngoài (sau delayMs nếu có). */
+    /** Phản hồi rung nhẹ mỗi khi ô kính đi qua sang một mục khác (chạm hoặc kéo), như thanh chọn của iOS. */
+    private int tickIdx = -1;
+
+    private void tickIfChanged() {
+        int i = Math.round(index.target);
+        if (i == tickIdx) return;
+        tickIdx = i;
+        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+    }
+
     private void commit(int t) {
         t = Math.max(0, Math.min(n - 1, t));
         index.target = t;
@@ -373,6 +395,8 @@ final class GlassSeg extends ViewGroup {
                 downX = e.getX();
                 lastX = downX;
                 index.target = indexAt(downX);      // ô kính chạy ngay tới ô đang chạm và phồng lên
+                tickIdx = selected;
+                tickIfChanged();
                 press();
                 kick();
                 return true;
@@ -387,6 +411,7 @@ final class GlassSeg extends ViewGroup {
                     float dx = e.getX() - lastX;
                     lastX = e.getX();
                     index.target = clamp(index.target + dx / cw, 0f, n - 1);
+                    tickIfChanged();
                     kick();
                 }
                 return true;
@@ -425,6 +450,9 @@ final class GlassSeg extends ViewGroup {
     private final class IndicatorView extends View {
         private final Paint surface = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path clip = new Path();
+        private final int[] a = new int[2];
+        private final int[] b = new int[2];
+        private final GlassFx fx = new GlassFx(dp);
         private RuntimeShader lensShader;
         private boolean lensOn;
 
@@ -452,7 +480,7 @@ final class GlassSeg extends ViewGroup {
                 setRenderEffect(Glass.lens(lensShader, true, rect.width(), rect.height(),
                         rect.left + padX, rect.top + padY, radius,
                         Glass.PILL_REFRACTION_HEIGHT_DP * k, Glass.PILL_REFRACTION_AMOUNT_DP * k,
-                        1f, Glass.PILL_CHROMA));
+                        1f, Glass.PILL_CHROMA, 1f + Glass.SEG_LENS_MAGNIFY * p));
                 lensOn = true;
             } catch (RuntimeException e) {
                 Log.w(TAG, "glass seg: lens failed, disabled", e);
@@ -470,17 +498,46 @@ final class GlassSeg extends ViewGroup {
                 clip.reset();
                 clip.addRoundRect(rect.left + padX, rect.top + padY, rect.right + padX, rect.bottom + padY,
                         radius, radius, Path.Direction.CW);
+                int w = GlassSeg.this.getWidth();
+                int h = GlassSeg.this.getHeight();
+                // nền kính của ô: nền trang + thẻ chứa + nền thanh. Ghi vào node riêng (không dùng chính view cha vì cha chứa luôn
+                // ô này: vẽ lại cha sẽ kéo theo ảnh cũ của ô vào nền), nên nền kính hiện cả phần ô nhô ra ngoài thanh.
+                RecordingCanvas rc = lensNode.beginRecording(w + 2 * padX, h + 2 * padY);
+                try {
+                    rc.drawColor(pal.bgBottom);
+                    rc.translate(padX, padY);                  // toạ độ GlassSeg
+                    android.view.ViewParent pp = GlassSeg.this.getParent();
+                    if (pp instanceof View) {
+                        View par = (View) pp;
+                        Drawable pbg = par.getBackground();
+                        if (pbg != null) {
+                            GlassSeg.this.getLocationInWindow(a);
+                            par.getLocationInWindow(b);
+                            rc.save();
+                            rc.translate(b[0] - a[0], b[1] - a[1]);
+                            pbg.draw(rc);
+                            rc.restore();
+                        }
+                    }
+                    Drawable sbg = GlassSeg.this.getBackground();
+                    if (sbg != null) sbg.draw(rc);
+                } finally {
+                    lensNode.endRecording();
+                }
                 c.save();
                 c.clipPath(clip);
+                c.drawRenderNode(lensNode);                    // toạ độ view (đã gồm lề padX/padY)
                 c.translate(padX, padY);                       // từ đây là toạ độ GlassSeg
                 // màu nền ô: accent nhạt khi nghỉ (giống khối sáng cũ), gần như trong suốt khi nhấn để thấy khúc xạ
-                int a = Math.round(0x26 * (1f - 0.6f * p));
-                surface.setColor((pal.accent & 0x00FFFFFF) | (a << 24));
+                int al = Math.round(0x26 * (1f - 0.6f * p));
+                surface.setColor((pal.accent & 0x00FFFFFF) | (al << 24));
                 c.drawRect(rect, surface);
                 c.save();
                 c.translate(accent.getLeft(), accent.getTop());
                 accent.draw(c);                                // chữ accent
                 c.restore();
+                // phản chiếu xanh, cùng kiểu với thanh nav
+                fx.reflection(c, rect, (pal.dark ? 0.02f : 0.02f) + (pal.dark ? 0.08f : 0.05f) * p);
                 c.restore();
             } catch (RuntimeException e) {
                 fail(e);
@@ -488,13 +545,13 @@ final class GlassSeg extends ViewGroup {
         }
     }
 
-    /** Viền accent mảnh khi nghỉ; viền sáng + bóng trong khi nhấn. Nằm ngoài IndicatorView nên không bị khúc xạ. */
+    /** Chỉ vẽ khi nhấn: viền sáng + bóng trong của thấu kính. Nằm ngoài IndicatorView nên không bị khúc xạ. */
     private final class RimView extends View {
         private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final GlassFx fx = new GlassFx(dp);
         private final Path shape = new Path();
         private final Path shapeStroke = new Path();
-        private final SweepGradient grad = GlassFx.lobes(0f, 90f, 0.4f);
+        private final SweepGradient grad = GlassFx.tintedLobes(225f, 0xFF86A4FF, 45f, 0xFF86A4FF, 0.85f);
 
         RimView(Context c) {
             super(c);
@@ -516,11 +573,7 @@ final class GlassSeg extends ViewGroup {
                 shapeStroke.reset();
                 shapeStroke.addRoundRect(l + in, t + in, rr - in, bb - in, ri, ri, Path.Direction.CW);
 
-                // viền accent (như khối sáng cũ), mờ dần khi nhấn
-                int a = Math.round(0x80 * (1f - 0.6f * p));
-                stroke.setColor((pal.accent & 0x00FFFFFF) | (a << 24));
-                c.drawPath(shapeStroke, stroke);
-
+                // lúc nghỉ ô không có viền (viền là của thanh ngoài); chỉ khi nhấn mới có viền sáng của thấu kính
                 if (p <= 0.002f) return;
                 shape.reset();
                 shape.addRoundRect(l, t, rr, bb, radius, radius, Path.Direction.CW);

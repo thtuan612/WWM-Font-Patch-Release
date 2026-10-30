@@ -21,6 +21,7 @@ import android.graphics.RenderEffect;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.StateListDrawable;
@@ -99,7 +100,11 @@ public class MainActivity extends Activity {
     private static final int WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
 
     /** Chừa chỗ dưới nội dung cho thanh nav nổi (dp) để mục cuối cuộn lên không bị che. */
-    private static final int NAV_CLEAR = 96;
+    private static final int NAV_CLEAR = 108;
+    /** Khoảng nâng thanh nav nổi lên khỏi mép dưới (dp), chưa tính thanh điều hướng hệ thống. */
+    private static final int NAV_LIFT = 26;
+    /** Bề rộng một mục của thanh nav ngang (dp): thanh co lại vừa ba mục thay vì kéo hết chiều ngang. */
+    private static final int NAV_ITEM_W = 86;
 
     /** Thanh nav dọc (xoay ngang): kích thước một mục và chỗ chừa cho cả thanh. */
     private static final int RAIL_ITEM_W = 60;
@@ -118,6 +123,7 @@ public class MainActivity extends Activity {
     private boolean en;                 // ngôn ngữ giao diện: true = English
 
     private final View[] pages = new View[3];
+    private final ScrollView[] scrollViews = new ScrollView[3];
     private final LinearLayout[] navItems = new LinearLayout[3];
     private final ImageView[] navIcons = new ImageView[3];
     private final TextView[] navLabels = new TextView[3];
@@ -158,7 +164,8 @@ public class MainActivity extends Activity {
     private final TextView[] tvChoose = new TextView[3];
     private final TextView[] tvPreview = new TextView[3];
     // advanced
-    private Switch swRoot, swShizuku, swAutoStop;
+    private Switch swAutoStop;
+    private TextView tvMethodVal;
     private boolean syncing;
     private EditText etHotfix;
     private TextView tvUpdateStatus;
@@ -168,6 +175,7 @@ public class MainActivity extends Activity {
     // Các biến static sống qua việc Activity bị tạo lại (xoay màn hình, đổi theme/ngôn ngữ) giữa lúc đang patch:
     // tác vụ chạy ở luồng nền nên khi xong phải nói chuyện với instance MỚI, không phải instance đã bị huỷ.
     private static Bitmap themeShot;              // ảnh chụp giao diện cũ, phủ lên rồi mờ dần khi đổi theme
+    private static int[] savedScrollY = new int[3];
     private static MainActivity current;          // instance đang hiển thị
     private static String runningTitle;           // khác null khi có tác vụ đang chạy
     private static Pending pending;               // kết quả đã xong nhưng chưa có Activity nào hiển thị được
@@ -200,6 +208,45 @@ public class MainActivity extends Activity {
     private String slotTitle(int i) { return en ? SLOT_EN[i] : SLOT_VI[i]; }
 
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
+
+    private void saveScrollPositions() {
+        if (savedScrollY == null) savedScrollY = new int[3];
+        for (int i = 0; i < 3; i++) {
+            if (scrollViews[i] != null) savedScrollY[i] = scrollViews[i].getScrollY();
+        }
+    }
+
+    private void restoreScroll(final ScrollView sv, final int targetY) {
+        if (sv == null || targetY <= 0) return;
+        final View.OnLayoutChangeListener listener = new View.OnLayoutChangeListener() {
+            private int attempts = 0;
+            @Override
+            public void onLayoutChange(View v, int l, int t, int r, int b,
+                                       int ol, int ot, int or, int ob) {
+                int svH = b - t;
+                if (svH <= 0) return;
+                View child = sv.getChildAt(0);
+                if (child == null || child.getHeight() <= 0) return;
+                attempts++;
+                int maxScroll = Math.max(0, child.getHeight() - svH);
+                int clampedY = Math.min(targetY, maxScroll);
+                sv.scrollTo(0, clampedY);
+                if ((maxScroll > 0 && sv.getScrollY() == clampedY) || attempts >= 5) {
+                    sv.removeOnLayoutChangeListener(this);
+                }
+            }
+        };
+        sv.addOnLayoutChangeListener(listener);
+        sv.post(() -> {
+            if (sv.getHeight() > 0 && targetY > 0) {
+                View child = sv.getChildAt(0);
+                if (child != null && child.getHeight() > sv.getHeight()) {
+                    int clampedY = Math.min(targetY, child.getHeight() - sv.getHeight());
+                    sv.scrollTo(0, clampedY);
+                }
+            }
+        });
+    }
 
     /** Khoảng chừa dưới nội dung: thanh dọc không che phía dưới nên chỉ cần lề nhỏ. */
     private int navClear() { return dp(rail ? 16 : NAV_CLEAR); }
@@ -264,7 +311,7 @@ public class MainActivity extends Activity {
     private LinearLayout card() {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(rounded(pal.card, 20, pal.stroke));
+        c.setBackground(rounded(pal.card, 22, pal.stroke));
         c.setPadding(dp(16), dp(14), dp(16), dp(14));
         return c;
     }
@@ -359,13 +406,10 @@ public class MainActivity extends Activity {
 
         // "scene" = nền + các trang. Thanh nav nằm đè lên trên và làm mờ đúng phần scene phía sau nó.
         scene = new FrameLayout(this);
-        ImageView bg = new ImageView(this);
-        bg.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        bg.setImageResource(pal.bg);
+        View bg = new View(this);
+        bg.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{pal.bgTop, pal.bgBottom}));
         scene.addView(bg, new FrameLayout.LayoutParams(MATCH, MATCH));
-        View overlay = new View(this);
-        overlay.setBackgroundColor(pal.overlay);
-        scene.addView(overlay, new FrameLayout.LayoutParams(MATCH, MATCH));
         FrameLayout frame = new FrameLayout(this);
         pages[0] = buildHomePage();
         pages[1] = buildFontPage();
@@ -385,8 +429,8 @@ public class MainActivity extends Activity {
                     (railRight ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL);
             nlp.setMargins(dp(RAIL_EDGE), 0, dp(RAIL_EDGE), 0);
         } else {
-            nlp = new FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM);
-            nlp.setMargins(dp(16), 0, dp(16), dp(12));
+            nlp = new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);   // thanh gọn, nằm giữa
+            nlp.setMargins(dp(16), 0, dp(16), dp(NAV_LIFT));
         }
         final View navView = buildNav();
         root.addView(navView, nlp);
@@ -403,12 +447,13 @@ public class MainActivity extends Activity {
             } else {
                 nlp.leftMargin = dp(16) + in[0];
                 nlp.rightMargin = dp(16) + in[2];
-                nlp.bottomMargin = dp(12) + in[3];
+                nlp.bottomMargin = dp(NAV_LIFT) + in[3];
             }
             navView.setLayoutParams(nlp);
-            for (ViewGroup c : contents) if (c != null) c.setPadding(dp(16), dp(8), dp(16), navClear() + in[3]);
+            for (int ci = 0; ci < contents.length; ci++) if (contents[ci] != null) contents[ci].setPadding(dp(16), ci == 0 ? dp(8) : dp(66), dp(16), navClear() + in[3]);
             return ins;
         });
+        setupDrop(root);
         setContentView(root);
         playThemeFade(root);
 
@@ -422,10 +467,20 @@ public class MainActivity extends Activity {
         refreshHome();
         refreshFonts(false);
         selectTab(tab, false);
+        final int[] restoreY = (b != null && b.containsKey("scrollY"))
+                ? b.getIntArray("scrollY")
+                : savedScrollY;
+        if (restoreY != null) {
+            for (int i = 0; i < 3; i++) {
+                if (i < restoreY.length && restoreY[i] > 0) {
+                    restoreScroll(scrollViews[i], restoreY[i]);
+                }
+            }
+        }
         if (b == null) {                       // chỉ khi mở app lần đầu
             Anim.stamp(sealView, 250);
             Anim.stagger(contents[tab], 0, 0f, dp(16), 80);
-            checkUpdate(false);                // kiểm tra cập nhật âm thầm, chỉ báo khi có bản mới
+            checkUpdate(false, null);                // kiểm tra cập nhật âm thầm, chỉ báo khi có bản mới
         }
         blurTick(700);
 
@@ -442,7 +497,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);
+        saveScrollPositions();
         out.putInt("tab", tab);
+        out.putIntArray("scrollY", savedScrollY);
     }
 
     @Override
@@ -463,6 +520,30 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- shared pieces
 
+    /** Đầu trang con: một viên kính nổi chứa mũi tên + tiêu đề (không có thanh nền), nội dung cuộn trôi bên dưới. */
+    private View backPill(String title) {
+        float den = getResources().getDisplayMetrics().density;
+        LinearLayout pill = new LinearLayout(this);
+        pill.setOrientation(LinearLayout.HORIZONTAL);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(dp(8), 0, dp(22), 0);
+        if (!(Glass.enabled(sp) && GlassDialog.applyToButton(pill, pal, den, 44)))
+            pill.setBackground(rounded(pal.tonal, 22, 0));
+        ImageView back = icon(R.drawable.ic_back, pal.text, 24);
+        back.setPadding(dp(4), dp(4), dp(4), dp(4));
+        pill.addView(back, new LinearLayout.LayoutParams(dp(32), dp(32)));
+        TextView t = serif(tv(title, 18, pal.text, false), false);
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
+        pill.addView(t, lpm(WRAP, WRAP, 6, 0, 0, 0));
+        pill.setOnClickListener(v -> selectTab(0));
+        pressFx(pill);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(WRAP, dp(44), Gravity.TOP | Gravity.START);
+        lp.setMargins(dp(16), dp(10), dp(16), 0);
+        pill.setLayoutParams(lp);
+        return pill;
+    }
+
     private View header(boolean home, String title) {
         LinearLayout h = new LinearLayout(this);
         h.setOrientation(LinearLayout.HORIZONTAL);
@@ -482,10 +563,7 @@ public class MainActivity extends Activity {
             sealView = seal;
             h.addView(logo, new LinearLayout.LayoutParams(dp(42), dp(46)));
         } else {
-            ImageView back = icon(R.drawable.ic_back, pal.text, 24);
-            back.setPadding(dp(2), dp(2), dp(2), dp(2));
-            back.setOnClickListener(v -> selectTab(0));
-            h.addView(back, new LinearLayout.LayoutParams(dp(32), dp(32)));
+            return backPill(title);
         }
         TextView t = serif(tv(title, 21, pal.text, false), false);
         t.setSingleLine(true);
@@ -495,56 +573,36 @@ public class MainActivity extends Activity {
         return h;
     }
 
-    /**
-     * Khung của nút cọ: chiều cao luôn theo đúng tỉ lệ ảnh cọ (900x165) nên nét cọ không bị kéo méo
-     * (trước đây nút 72dp dùng FIT_XY làm ảnh giãn dọc ~20% trên máy 360dp). Có trần để màn hình rộng không phình quá to.
-     */
-    private static final class BrushFrame extends FrameLayout {
-        private static final float RATIO = 900f / 165f;
-        private final int maxHeight;
-
-        BrushFrame(Context c, int maxHeight) {
-            super(c);
-            this.maxHeight = maxHeight;
-        }
-
-        @Override
-        protected void onMeasure(int wSpec, int hSpec) {
-            int w = MeasureSpec.getSize(wSpec);
-            if (w <= 0) {
-                super.onMeasure(wSpec, hSpec);
-                return;
-            }
-            int h = Math.min(Math.round(w / RATIO), maxHeight);
-            super.onMeasure(wSpec, MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
-        }
+    /** Nút chính: một khối màu nhấn phẳng, bo tròn. Phản hồi lúc chạm, trở về bằng lò xo (Anim.press). */
+    private TextView primaryButton(String label, int heightDp) {
+        TextView b = serif(tv(label, 17, pal.onPrimary, false), false);
+        b.setGravity(Gravity.CENTER);
+        b.setLetterSpacing(0.01f);
+        b.setSingleLine(true);
+        b.setEllipsize(TextUtils.TruncateAt.END);
+        b.setPadding(dp(20), 0, dp(20), 0);
+        b.setMinHeight(dp(heightDp));
+        b.setBackground(rounded(pal.primary, heightDp / 2, 0));
+        pressFx(b);
+        return b;
     }
 
-    private View brushButton(String label, boolean seal, View.OnClickListener l) {
-        FrameLayout f = new BrushFrame(this, dp(88));
-        ImageView b = new ImageView(this);
-        b.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        b.setImageResource(pal.brush);
-        f.addView(b, new FrameLayout.LayoutParams(MATCH, MATCH));
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(seal ? 34 : 30), 0, dp(30), 0);
-        if (seal) {
-            ImageView lead = new ImageView(this);
-            lead.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            lead.setImageResource(R.drawable.seal);
-            row.addView(lead, new LinearLayout.LayoutParams(dp(26), dp(26)));
-        }
-        TextView t = serif(tv(label, 18, pal.onBrush, false), false);
-        t.setGravity(Gravity.CENTER);
-        row.addView(t, new LinearLayout.LayoutParams(0, WRAP, 1f));
-        if (seal) row.addView(new View(this), new LinearLayout.LayoutParams(dp(26), dp(26)));   // cân đối để chữ nằm giữa nút
-        f.addView(row, new FrameLayout.LayoutParams(MATCH, MATCH));
-        f.setOnClickListener(l);
-        pressFx(f);
-        f.setLayoutParams(lpm(MATCH, WRAP, 0, 0, 0, 0));
-        return f;
+    /** Nút phụ: nền nhạt cùng tông, không viền. */
+    private TextView tonalButton(String label, int heightDp) {
+        TextView b = tv(label, 14, pal.text, true);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        b.setMinHeight(dp(heightDp));
+        b.setBackground(rounded(pal.tonal, heightDp / 2, 0));
+        pressFx(b);
+        return b;
+    }
+
+    private View mainButton(String label, View.OnClickListener l) {
+        TextView b = primaryButton(label, 56);
+        b.setOnClickListener(l);
+        b.setLayoutParams(lpm(MATCH, WRAP, 0, 0, 0, 0));
+        return b;
     }
 
     // ---------------------------------------------------------------- Patch (home)
@@ -558,41 +616,73 @@ public class MainActivity extends Activity {
         c.setOrientation(LinearLayout.VERTICAL);
         c.setPadding(dp(16), dp(8), dp(16), navClear());
         contents[0] = c;
+        c.setClipToPadding(false);      // con trượt/lệch khi chuyển trang không bị cắt ở mép padding (nút cuối trang)
 
         // game card
         LinearLayout game = card();
         game.setOrientation(LinearLayout.HORIZONTAL);
         game.setGravity(Gravity.CENTER_VERTICAL);
-        game.setPadding(dp(10), dp(10), dp(14), dp(10));
-        ImageView banner = new ImageView(this);
-        banner.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        banner.setImageResource(pal.banner);
-        banner.setBackground(rounded(0xFF000000, 14, 0));
-        banner.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
-        banner.setClipToOutline(true);
-        game.addView(banner, new LinearLayout.LayoutParams(dp(116), dp(80)));
+        game.setPadding(dp(14), dp(14), dp(14), dp(14));
+        // nền: ảnh minh hoạ bên phải, mờ dần sang màu thẻ ở bên trái cho chữ dễ đọc
+        game.setBackground(new HeroArt(
+                android.graphics.BitmapFactory.decodeResource(getResources(), R.drawable.hero_art),
+                pal.card, (pal.accent & 0x00FFFFFF) | 0x2E000000, dp(28), Math.round(1.5f * dp(1))));
+        // Avatar: icon thật của app game đang chọn (mỗi bản VN / Global / CN có gói riêng nên tự đồng bộ);
+        // chưa cài game thì hiện ô trống ghi mã vùng.
+        FrameLayout avatar = new FrameLayout(this);
+        avatar.setBackground(rounded(pal.tonal, 22, 0));
+        avatar.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
+        avatar.setClipToOutline(true);
+        ivGameIcon = new ImageView(this);
+        ivGameIcon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        avatar.addView(ivGameIcon, new FrameLayout.LayoutParams(MATCH, MATCH));
+        tvGameRegion = tv("", 20, pal.sub, true);
+        tvGameRegion.setGravity(Gravity.CENTER);
+        avatar.addView(tvGameRegion, new FrameLayout.LayoutParams(MATCH, MATCH));
+        // khung viền sáng quanh icon, vẽ đè lên ảnh
+        GradientDrawable ring = new GradientDrawable();
+        ring.setCornerRadius(dp(22));
+        ring.setStroke(Math.round(1.5f * dp(1)), (pal.accent & 0x00FFFFFF) | 0x40000000);
+        avatar.setForeground(ring);
+        game.addView(avatar, new LinearLayout.LayoutParams(dp(88), dp(88)));
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
-        tvGameName = serif(tv("", 16, pal.text, true), true);
+        tvGameName = serif(tv("", 17, pal.text, true), true);
         tvGameName.setMaxLines(2);
         tvGameName.setEllipsize(TextUtils.TruncateAt.END);
         tvGameSel = tv("", 12, pal.sub, false);
         tvGameSel.setSingleLine(true);
         tvGameSel.setEllipsize(TextUtils.TruncateAt.END);
-        TextView change = tv(t("Thay đổi", "Change"), 12, pal.text, false);
-        change.setBackground(rounded(0x00000000, 14, pal.sub & 0x00FFFFFF | 0x66000000));
-        change.setPadding(dp(14), dp(5), dp(14), dp(5));
+        TextView change = tv(t("Thay đổi", "Change"), 13, pal.text, false);
+        change.setBackground(rounded(pal.tonal, 20, 0));
+        change.setPadding(dp(18), dp(8), dp(18), dp(8));
         change.setOnClickListener(v -> showGamePicker(v));
         pressFx(change);
         info.addView(tvGameName);
-        info.addView(tvGameSel, lpm(WRAP, WRAP, 0, 2, 0, 0));
-        info.addView(change, lpm(WRAP, WRAP, 0, 8, 0, 0));
-        game.addView(info, lpm(0, WRAP, 14, 0, 0, 0));
-        ((LinearLayout.LayoutParams) info.getLayoutParams()).weight = 1f;
+        // trạng thái bằng một chấm: xanh = đã cài game, xám = chưa cài (thay cho dòng chữ trạng thái)
+        LinearLayout verRow = new LinearLayout(this);
+        verRow.setOrientation(LinearLayout.HORIZONTAL);
+        verRow.setGravity(Gravity.CENTER_VERTICAL);
+        viewGameDot = new View(this);
+        GradientDrawable dotBg = new GradientDrawable();
+        dotBg.setShape(GradientDrawable.OVAL);
+        dotBg.setColor(pal.sub);
+        viewGameDot.setBackground(dotBg);
+        verRow.addView(viewGameDot, lpm(dp(8), dp(8), 0, 0, 7, 0));
+        verRow.addView(tvGameSel);
+        info.addView(verRow, lpm(WRAP, WRAP, 0, 3, 0, 0));
+        // đệm giãn: đẩy nút "Thay đổi" xuống góc dưới bên phải, ngang đáy avatar
+        info.addView(new View(this), new LinearLayout.LayoutParams(1, 0, 1f));
+        LinearLayout.LayoutParams chLp = new LinearLayout.LayoutParams(WRAP, WRAP);
+        chLp.gravity = Gravity.END;
+        chLp.topMargin = dp(6);
+        info.addView(change, chLp);
+        game.addView(info, new LinearLayout.LayoutParams(0, MATCH, 1f));
+        ((LinearLayout.LayoutParams) info.getLayoutParams()).leftMargin = dp(16);
         c.addView(game, lpm(MATCH, WRAP, 0, 0, 0, 0));
 
         // main action
-        c.addView(brushButton(t("Cài patch font", "Install font patch"), true, v -> doInstall()),
+        c.addView(mainButton(t("Cài patch font", "Install font patch"), v -> doInstall()),
                 lpm(MATCH, WRAP, 0, 14, 0, 0));
 
         // three small actions
@@ -637,22 +727,27 @@ public class MainActivity extends Activity {
                 lpm(MATCH, WRAP, 0, 10, 0, 0));
         LinearLayout fb = new LinearLayout(this);
         fb.setOrientation(LinearLayout.HORIZONTAL);
-        TextView fApply = tv(t("Áp dụng", "Apply"), 14, pal.onBrush, true);
-        fApply.setGravity(Gravity.CENTER);
-        fApply.setBackground(rounded(pal.dark ? 0xFF1F7A6C : 0xFF232B2E, 22, 0));
+        TextView fApply = primaryButton(t("Áp dụng", "Apply"), 44);
+        fApply.setTextSize(14);
+        fApply.setTypeface(Typeface.DEFAULT_BOLD);
         fApply.setOnClickListener(v -> doInstallFps());
-        pressFx(fApply);
-        TextView fRemove = tv(t("Gỡ", "Remove"), 14, pal.text, true);
-        fRemove.setGravity(Gravity.CENTER);
-        fRemove.setBackground(rounded(0x00000000, 22, pal.stroke));
+        TextView fRemove = tonalButton(t("Gỡ", "Remove"), 44);
         fRemove.setOnClickListener(v -> task(t("Gỡ mở khóa FPS", "Remove FPS unlock"),
                 t("Đã gỡ mở khóa FPS.", "FPS unlock removed."),
                 (p, bk, pk) -> p.uninstallFps(pk, bk), this::clearFpsApplied));
-        pressFx(fRemove);
         fb.addView(fApply, new LinearLayout.LayoutParams(0, dp(44), 1f));
         fb.addView(fRemove, lpm(0, dp(44), 10, 0, 0, 0));
         ((LinearLayout.LayoutParams) fRemove.getLayoutParams()).weight = 1f;
         fc.addView(fb, lpm(MATCH, WRAP, 0, 12, 0, 0));
+        // ghi chú: nói rõ phạm vi của tính năng để không bị hiểu nhầm là "tăng FPS"
+        TextView fNote = tv(t("Lưu ý: tính năng này chỉ gỡ giới hạn FPS của game, tùy chọn FPS trong phần cài đặt của game vẫn không được mở khóa. "
+                        + "FPS thực tế đạt được phụ thuộc vào cấu hình máy của bạn.",
+                "Note: this only lifts the game's FPS cap; the FPS option in the game's own settings stays locked. "
+                        + "The FPS you actually reach depends on your device's hardware."),
+                11, pal.sub, false);
+        fNote.setBackground(rounded(pal.tonal, 14, 0));
+        fNote.setPadding(dp(12), dp(9), dp(12), dp(9));
+        fc.addView(fNote, lpm(MATCH, WRAP, 0, 12, 0, 0));
         c.addView(fc, lpm(MATCH, WRAP, 0, 12, 0, 0));
 
         // information
@@ -663,7 +758,9 @@ public class MainActivity extends Activity {
         tvInfoMethod = infoRow(inf, t("Phương thức ghi", "Write method"), false);
         c.addView(inf, lpm(MATCH, WRAP, 0, 12, 0, 0));
 
-        page.addView(scroll(c), new LinearLayout.LayoutParams(MATCH, 0, 1f));
+        ScrollView sv = scroll(c);
+        scrollViews[0] = sv;
+        page.addView(sv, new LinearLayout.LayoutParams(MATCH, 0, 1f));
         return page;
     }
 
@@ -683,10 +780,11 @@ public class MainActivity extends Activity {
         final int[] sel = {initial};
         final int[] cw = {0};
         final FrameLayout seg = new FrameLayout(this);
-        seg.setBackground(rounded(pal.field, 18, pal.stroke));
+        // viền nằm ở thanh ngoài, ô chọn bên trong không viền
+        seg.setBackground(rounded(pal.tonal, 30, pal.accent & 0x00FFFFFF | 0x40000000));
         seg.setPadding(dp(4), dp(4), dp(4), dp(4));
         final View hl = new View(this);
-        hl.setBackground(rounded(pal.accent & 0x00FFFFFF | 0x26000000, 14, pal.accent & 0x00FFFFFF | 0x80000000));
+        hl.setBackground(rounded(pal.accent & 0x00FFFFFF | 0x26000000, 30, 0));
         seg.addView(hl, new FrameLayout.LayoutParams(0, dp(42)));
         LinearLayout cells = new LinearLayout(this);
         cells.setOrientation(LinearLayout.HORIZONTAL);
@@ -704,8 +802,7 @@ public class MainActivity extends Activity {
                     lbs[k].setTextColor(k == idx ? pal.accent : pal.text);
                     lbs[k].setTypeface(k == idx ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
                 }
-                if (Anim.on()) hl.animate().translationX(idx * cw[0]).setDuration(260).setInterpolator(Anim.STD).start();
-                else hl.setTranslationX(idx * cw[0]);
+                Anim.slideAxis(hl, idx * cw[0], false, true);
                 if (delayMs > 0) seg.postDelayed(() -> onPick.accept(idx), delayMs);
                 else onPick.accept(idx);
             });
@@ -723,7 +820,7 @@ public class MainActivity extends Activity {
             cw[0] = c;
             hp.width = c;
             hl.setLayoutParams(hp);
-            hl.animate().cancel();
+            Motion.stop(hl);
             hl.setTranslationX(sel[0] * c);
         });
         return seg;
@@ -733,7 +830,7 @@ public class MainActivity extends Activity {
         LinearLayout a = new LinearLayout(this);
         a.setOrientation(LinearLayout.VERTICAL);
         a.setGravity(Gravity.CENTER_HORIZONTAL);
-        a.setBackground(rounded(pal.card, 18, pal.stroke));
+        a.setBackground(rounded(pal.card, 20, pal.stroke));
         a.setPadding(dp(6), dp(14), dp(6), dp(12));
         ImageView iv = icon(iconRes, pal.text, 26);
         a.addView(iv);
@@ -770,14 +867,24 @@ public class MainActivity extends Activity {
     }
 
     private TextView tvFpsBadge;
+    private ImageView ivGameIcon;
+    private View viewGameDot;
+    private TextView tvGameRegion;
 
     private void refreshHome() {
         String ver = gameVersion(pkg);
         tvGameName.setText(gameName(pkg));
-        tvGameSel.setText(t("Đã chọn: ", "Selected: ") + (ver != null ? ver : t("chưa cài game", "game not installed")));
+        tvGameSel.setText(ver != null ? ver : t("Chưa cài game", "Game not installed"));
+        ((GradientDrawable) viewGameDot.getBackground()).setColor(ver != null ? 0xFF34C759 : pal.sub);
+        Drawable icon = null;
+        if (ver != null) {
+            try { icon = getPackageManager().getApplicationIcon(pkg); } catch (Exception ignored) { }
+        }
+        ivGameIcon.setImageDrawable(icon);
+        tvGameRegion.setText(icon == null ? gameRegion(pkg) : "");
         tvInfoVer.setText(ver != null ? ver : t("Chưa cài", "Not installed"));
         tvInfoDir.setText("/storage/emulated/0/Android/data/" + pkg + "/files");
-        tvInfoMethod.setText(swRoot != null && swRoot.isChecked() ? "Root" : "Shizuku");
+        tvInfoMethod.setText(methodName(method()));
         refreshFps();
     }
 
@@ -811,14 +918,14 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- Font
 
     private View buildFontPage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.addView(header(false, t("Quản lý Font", "Font Manager")));
+        FrameLayout page = new FrameLayout(this);
+        View pill = header(false, t("Quản lý Font", "Font Manager"));
 
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(16), dp(8), dp(16), navClear());
+        c.setPadding(dp(16), dp(66), dp(16), navClear());
         contents[1] = c;
+        c.setClipToPadding(false);      // con trượt/lệch khi chuyển trang không bị cắt ở mép padding (nút cuối trang)
         for (int i = 0; i < 3; i++) {
             final int idx = i;
             LinearLayout card = card();
@@ -846,8 +953,8 @@ public class MainActivity extends Activity {
             tvBadge[i].setPadding(dp(10), dp(4), dp(10), dp(4));
             right.addView(tvBadge[i], new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER_VERTICAL | Gravity.END));
             tvChoose[i] = tv(t("Chọn", "Select"), 12, pal.text, false);
-            tvChoose[i].setBackground(rounded(0x00000000, 14, pal.sub & 0x00FFFFFF | 0x66000000));
-            tvChoose[i].setPadding(dp(16), dp(5), dp(16), dp(5));
+            tvChoose[i].setBackground(rounded(pal.tonal, 16, 0));
+            tvChoose[i].setPadding(dp(16), dp(6), dp(16), dp(6));
             right.addView(tvChoose[i], new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER_VERTICAL | Gravity.END));
             top.addView(right, lpm(WRAP, WRAP, 8, 0, 0, 0));
             card.addView(top);
@@ -856,12 +963,15 @@ public class MainActivity extends Activity {
             tvPreview[i].setGravity(Gravity.CENTER);
             card.addView(tvPreview[i], lpm(MATCH, WRAP, 0, 14, 0, 4));
 
-            card.setOnClickListener(v -> showFontPicker(idx, v));
+            card.setOnClickListener(v -> showFontPicker(idx, tvChoose[idx]));   // neo vào nút "Chọn", không phải cả thẻ
             pressFx(card);
             c.addView(card, lpm(MATCH, WRAP, 0, i == 0 ? 0 : 12, 0, 0));
         }
-        c.addView(brushButton(t("Thêm font .ttf", "Add .ttf font"), false, v -> pickFont()), lpm(MATCH, WRAP, 0, 18, 0, 0));
-        page.addView(scroll(c), new LinearLayout.LayoutParams(MATCH, 0, 1f));
+        c.addView(mainButton(t("Thêm font .ttf", "Add .ttf font"), v -> pickFont()), lpm(MATCH, WRAP, 0, 18, 0, 0));
+        ScrollView sv = scroll(c);
+        scrollViews[1] = sv;
+        page.addView(sv, new FrameLayout.LayoutParams(MATCH, MATCH));
+        page.addView(pill);
         return page;
     }
 
@@ -926,7 +1036,7 @@ public class MainActivity extends Activity {
             final String name = names.get(i);
             final boolean isNone = i == 0;
             boolean cur = isNone ? selFonts[slot] == null : name.equals(selFonts[slot]);
-            TextView row = tv(name, 17, cur ? pal.accent : pal.text, cur);
+            TextView row = tv(name, 16, cur ? pal.accent : pal.text, cur);
             if (!isNone) {
                 Typeface tf = fonts.typeface(name);
                 if (tf != null) row.setTypeface(tf, cur ? Typeface.BOLD : Typeface.NORMAL);
@@ -938,79 +1048,222 @@ public class MainActivity extends Activity {
                 selFonts[slot] = isNone ? null : name;
                 sp.edit().putString("font" + slot, selFonts[slot] == null ? "" : selFonts[slot]).apply();
                 refreshFonts(true);
-                ref[0].dismiss();
+                Anim.dismiss(ref[0]);
             });
             c.addView(line);
         }
         TextView add = tv(t("+ Thêm font .ttf", "+ Add .ttf font"), 15, pal.accent, true);
         LinearLayout addRow = mxRow(add, false);
-        addRow.setOnClickListener(v -> { ref[0].dismiss(); pickFont(); });
+        addRow.setOnClickListener(v -> { Anim.dismiss(ref[0]); pickFont(); });
         c.addView(addRow);
-        ref[0] = showMxPopup(anchor, c, 300);
+        ref[0] = showMxPopup(anchor, c, 200);
     }
 
     private void pickFont() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.setType("*/*");
+        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);      // chọn nhiều font cùng lúc
         startActivityForResult(i, REQ_FONT);
     }
 
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req != REQ_FONT || res != RESULT_OK || data == null || data.getData() == null) return;
-        Uri u = data.getData();
-        try {
-            String name = "custom.ttf";
-            try (Cursor c = getContentResolver().query(u, null, null, null, null)) {
-                if (c != null && c.moveToFirst()) {
-                    int ix = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                    if (ix >= 0 && !c.isNull(ix)) name = c.getString(ix);   // provider có thể trả về null
+        if (req != REQ_FONT || res != RESULT_OK || data == null) return;
+        List<Uri> uris = new ArrayList<>();
+        ClipData cd = data.getClipData();
+        if (cd != null) {                                   // chọn nhiều: các file nằm trong ClipData
+            for (int k = 0; k < cd.getItemCount(); k++) {
+                Uri u = cd.getItemAt(k).getUri();
+                if (u != null) uris.add(u);
+            }
+        } else if (data.getData() != null) {                // chọn một file
+            uris.add(data.getData());
+        }
+        importFonts(uris, null);
+    }
+
+    /** Tên hiển thị của một Uri (provider có thể trả về null), mặc định "custom.ttf". */
+    private String displayName(Uri u) {
+        String name = "custom.ttf";
+        try (Cursor c = getContentResolver().query(u, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int ix = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (ix >= 0 && !c.isNull(ix)) name = c.getString(ix);
+            }
+        } catch (Exception ignored) {
+        }
+        return name;
+    }
+
+    /**
+     * Thêm lần lượt nhiều font (từ hộp chọn file hoặc kéo thả) ở luồng nền, rồi báo một thông báo tổng kết.
+     * perms: quyền đọc của thao tác kéo thả, phải giữ đến khi đọc xong (null nếu đến từ hộp chọn file).
+     */
+    private void importFonts(final List<Uri> uris, final android.view.DragAndDropPermissions perms) {
+        if (uris.isEmpty()) {
+            if (perms != null) perms.release();
+            return;
+        }
+        new Thread(() -> {
+            final List<String> added = new ArrayList<>();
+            int skipped = 0;
+            int failed = 0;
+            String firstErr = null;
+            for (Uri u : uris) {
+                String name = displayName(u);
+                if (!name.toLowerCase(Locale.ROOT).endsWith(".ttf")) {
+                    skipped++;
+                    continue;
+                }
+                try {
+                    InputStream in = getContentResolver().openInputStream(u);
+                    if (in == null) throw new java.io.IOException("cannot open " + u);
+                    fonts.add(in, name);                    // add() tự đóng InputStream
+                    added.add(name);
+                } catch (Exception e) {
+                    Log.w(TAG, "import font failed: " + name, e);
+                    failed++;
+                    if (firstErr == null) firstErr = name + ": " + (e.getMessage() != null ? e.getMessage() : e.toString());
                 }
             }
-            if (!name.toLowerCase().endsWith(".ttf")) {
-                Toast.makeText(this, t("Chỉ hỗ trợ file .ttf", "Only .ttf files are supported"), Toast.LENGTH_SHORT).show();
-                return;
-            }
-            InputStream in = getContentResolver().openInputStream(u);
-            if (in == null) throw new java.io.IOException("cannot open " + u);
-            fonts.add(in, name);
-            Toast.makeText(this, t("Đã thêm font: ", "Font added: ") + name, Toast.LENGTH_SHORT).show();
-            refreshFonts(true);
-        } catch (Exception e) {
-            Toast.makeText(this, t("Lỗi thêm font: ", "Failed to add font: ") + e, Toast.LENGTH_LONG).show();
+            if (perms != null) perms.release();
+            final int fSkipped = skipped;
+            final int fFailed = failed;
+            final String fErr = firstErr;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                StringBuilder msg = new StringBuilder();
+                if (added.size() == 1) msg.append(t("Đã thêm font: ", "Font added: ")).append(added.get(0));
+                else if (added.size() > 1) msg.append(t("Đã thêm ", "Added ")).append(added.size()).append(t(" font", " fonts"));
+                if (fSkipped > 0) {
+                    if (msg.length() > 0) msg.append('\n');
+                    msg.append(t("Bỏ qua " + fSkipped + " file không phải .ttf", "Skipped " + fSkipped + " non-.ttf file(s)"));
+                }
+                if (fFailed > 0) {
+                    if (msg.length() > 0) msg.append('\n');
+                    msg.append(t("Lỗi " + fFailed + " font: ", fFailed + " failed: ")).append(fErr);
+                }
+                Toast.makeText(this, msg.toString(), fFailed > 0 || added.isEmpty() ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT).show();
+                if (!added.isEmpty()) refreshFonts(true);
+            });
+        }).start();
+    }
+
+    // ---------------------------------------------------------------- drag & drop
+
+    private View dropOverlay;
+    private boolean dropShown;
+
+    /** Hiện/ẩn vùng nhận file; idempotent để bộ đếm làm mờ nền luôn cân bằng dù sự kiện kéo thả lặp lại. */
+    private void showDropZone(boolean on) {
+        if (on == dropShown) return;
+        dropShown = on;
+        dropOverlay.animate().cancel();
+        if (on) {
+            dropOverlay.setAlpha(0f);
+            dropOverlay.setVisibility(View.VISIBLE);
+            dropOverlay.animate().alpha(1f).setDuration(Anim.on() ? 160 : 0).start();
+        } else {
+            dropOverlay.setVisibility(View.GONE);
         }
+        backdropBlur(on);
+    }
+
+    /** Cho phép kéo file .ttf từ ứng dụng khác (cửa sổ nổi / chia đôi màn hình) thả vào app để thêm font. */
+    private void setupDrop(final FrameLayout root) {
+        // Khi kéo file vào: nền app mờ đi + tối nhẹ, ở giữa là một thẻ nhỏ đặc nên chữ luôn đọc rõ
+        FrameLayout ov = new FrameLayout(this);
+        ov.setBackgroundColor(pal.dark ? 0x40000000 : 0x26000000);
+        LinearLayout dz = new LinearLayout(this);
+        dz.setOrientation(LinearLayout.VERTICAL);
+        dz.setGravity(Gravity.CENTER_HORIZONTAL);
+        dz.setPadding(dp(28), dp(22), dp(28), dp(22));
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(pal.mxSurface);
+        g.setCornerRadius(dp(28));
+        g.setStroke(dp(2), pal.sub & 0x00FFFFFF | 0xAA000000, dp(8), dp(5));        // viền nét đứt
+        dz.setBackground(g);
+        dz.addView(icon(R.drawable.ic_font, pal.text, 30));
+        TextView hint = tv(t("Thả file .ttf vào đây", "Drop .ttf files here"), 16, pal.text, true);
+        hint.setGravity(Gravity.CENTER);
+        dz.addView(hint, lpm(WRAP, WRAP, 0, 10, 0, 0));
+        TextView hint2 = tv(t("để thêm font", "to add fonts"), 13, pal.sub, false);
+        hint2.setGravity(Gravity.CENTER);
+        dz.addView(hint2, lpm(WRAP, WRAP, 0, 2, 0, 0));
+        ov.addView(dz, new FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER));
+        dropOverlay = ov;
+        dropOverlay.setVisibility(View.GONE);
+        dropOverlay.setClickable(false);
+        root.addView(dropOverlay, new FrameLayout.LayoutParams(MATCH, MATCH));
+
+        root.setOnDragListener((v, e) -> {
+            switch (e.getAction()) {
+                case android.view.DragEvent.ACTION_DRAG_STARTED:
+                    return e.getClipDescription() != null;   // nhận cả file lẫn văn bản; lọc ở lúc thả
+                case android.view.DragEvent.ACTION_DRAG_ENTERED:
+                    showDropZone(true);
+                    return true;
+                case android.view.DragEvent.ACTION_DRAG_EXITED:
+                case android.view.DragEvent.ACTION_DRAG_ENDED:
+                    showDropZone(false);
+                    return true;
+                case android.view.DragEvent.ACTION_DROP: {
+                    showDropZone(false);
+                    ClipData cd = e.getClipData();
+                    if (cd == null) return false;
+                    List<Uri> uris = new ArrayList<>();
+                    for (int k = 0; k < cd.getItemCount(); k++) {
+                        Uri u = cd.getItemAt(k).getUri();
+                        if (u != null) uris.add(u);
+                    }
+                    if (uris.isEmpty()) return false;
+                    // quyền đọc các Uri kéo thả chỉ có hiệu lực khi xin ngay trong lúc thả
+                    android.view.DragAndDropPermissions perms = requestDragAndDropPermissions(e);
+                    if (tab != 1) selectTab(1);
+                    importFonts(uris, perms);
+                    return true;
+                }
+                default:
+                    return true;
+            }
+        });
     }
 
     // ---------------------------------------------------------------- Advanced
 
     private View buildAdvancedPage() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.addView(header(false, t("Nâng cao", "Advanced")));
+        FrameLayout page = new FrameLayout(this);
+        View pill = header(false, t("Nâng cao", "Advanced"));
 
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(16), dp(8), dp(16), navClear());
+        c.setPadding(dp(16), dp(66), dp(16), navClear());
         contents[2] = c;
+        c.setClipToPadding(false);      // con trượt/lệch khi chuyển trang không bị cắt ở mép padding (nút cuối trang)
 
         // writing method: two switches that behave like a radio pair
         LinearLayout how = card();
         how.addView(tv(t("Cài đặt nâng cao", "Advanced settings"), 15, pal.text, true));
-        boolean root = "root".equals(sp.getString("method", "shizuku"));
-        swRoot = new Switch(this);
-        swShizuku = new Switch(this);
-        styleSwitch(swRoot);
-        styleSwitch(swShizuku);
-        swRoot.setChecked(root);
-        swShizuku.setChecked(!root);
-        how.addView(switchRow(R.drawable.ic_security, t("Sử dụng Root", "Use Root"), null, swRoot), lpm(MATCH, WRAP, 0, 8, 0, 0));
-        how.addView(divider());
-        how.addView(switchRow(R.drawable.ic_adjust, t("Sử dụng Shizuku", "Use Shizuku"),
-                t("Cần cài ứng dụng Shizuku", "Requires the Shizuku app"), swShizuku));
-        swRoot.setOnCheckedChangeListener((v, on) -> methodChanged(true, on));
-        swShizuku.setOnCheckedChangeListener((v, on) -> methodChanged(false, on));
+        LinearLayout mrow = new LinearLayout(this);
+        mrow.setOrientation(LinearLayout.HORIZONTAL);
+        mrow.setGravity(Gravity.CENTER_VERTICAL);
+        mrow.setPadding(0, dp(10), 0, dp(10));
+        mrow.addView(icon(R.drawable.ic_security, pal.text, 22));
+        LinearLayout mt = new LinearLayout(this);
+        mt.setOrientation(LinearLayout.VERTICAL);
+        mt.addView(tv(t("Cách ghi file", "Write method"), 14, pal.text, false));
+        mt.addView(tv(t("Tự động thử Root trước, không được thì dùng Shizuku", "Auto tries Root first, then Shizuku"), 11, pal.sub, false));
+        LinearLayout.LayoutParams mtl = lpm(0, WRAP, 12, 0, 8, 0);
+        mtl.weight = 1f;
+        mrow.addView(mt, mtl);
+        tvMethodVal = tv(methodName(method()), 14, pal.sub, false);
+        mrow.addView(tvMethodVal);
+        mrow.addView(icon(R.drawable.ic_chevron_updown, pal.sub, 22), lpm(dp(22), dp(22), 6, 0, 0, 0));
+        mrow.setOnClickListener(v -> showMethodPicker(mrow));
+        pressFx(mrow);
+        how.addView(mrow, lpm(MATCH, WRAP, 0, 8, 0, 0));
         swAutoStop = new Switch(this);
         styleSwitch(swAutoStop);
         swAutoStop.setChecked(sp.getBoolean("autostop", true));
@@ -1062,9 +1315,15 @@ public class MainActivity extends Activity {
         String curSide = sp.getString("navside", "right");
         th.addView(segmented(sideNames, "left".equals(curSide) ? 1 : "bottom".equals(curSide) ? 2 : 0,
                 Anim.on() ? 280 : 0, i -> {
-                    sp.edit().putString("navside", sides[i]).apply();
-                    recreate();
-                    overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
+                    String oldSide = sp.getString("navside", "right");
+                    String newSide = sides[i];
+                    if (newSide.equals(oldSide)) return;
+                    sp.edit().putString("navside", newSide).apply();
+                    if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                        saveScrollPositions();
+                        recreate();
+                        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
+                    }
                 }), lpm(MATCH, WRAP, 0, 10, 0, 0));
         if (Glass.supported()) {               // liquid glass cần Android 13+ (AGSL)
             Switch swGlass = new Switch(this);
@@ -1072,6 +1331,7 @@ public class MainActivity extends Activity {
             swGlass.setChecked(Glass.enabled(sp));
             swGlass.setOnCheckedChangeListener((v, on) -> {
                 sp.edit().putBoolean(Glass.PREF, on).putBoolean(Glass.PREF_BROKEN, false).apply();
+                saveScrollPositions();
                 recreate();
                 overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
             });
@@ -1088,8 +1348,9 @@ public class MainActivity extends Activity {
         LinearLayout lr = new LinearLayout(this);
         lr.setOrientation(LinearLayout.HORIZONTAL);
         lr.setGravity(Gravity.CENTER_VERTICAL);
-        lr.addView(tv(en ? "English" : "Tiếng Việt", 14, pal.text, false), new LinearLayout.LayoutParams(0, WRAP, 1f));
-        lr.addView(icon(R.drawable.ic_chevron_right, pal.sub, 22));
+        lr.addView(tv(t("Chọn ngôn ngữ ứng dụng", "Choose the app language"), 13, pal.sub, false), new LinearLayout.LayoutParams(0, WRAP, 1f));
+        lr.addView(tv(en ? "English" : "Tiếng Việt", 14, pal.sub, false));
+        lr.addView(icon(R.drawable.ic_chevron_updown, pal.sub, 22), lpm(dp(22), dp(22), 6, 0, 0, 0));
         lr.setOnClickListener(v -> showLanguagePicker(v));
         pressFx(lr);
         lang.addView(lr, lpm(MATCH, WRAP, 0, 10, 0, 0));
@@ -1106,7 +1367,7 @@ public class MainActivity extends Activity {
         TextView btn = tv(t("Kiểm tra", "Check"), 13, pal.text, false);
         btn.setBackground(rounded(0x00000000, 16, pal.sub & 0x00FFFFFF | 0x66000000));
         btn.setPadding(dp(16), dp(7), dp(16), dp(7));
-        btn.setOnClickListener(v -> checkUpdate(true));
+        btn.setOnClickListener(v -> checkUpdate(true, v));
         pressFx(btn);
         ur.addView(btn, lpm(WRAP, WRAP, 10, 0, 0, 0));
         up.addView(ur, lpm(MATCH, WRAP, 0, 10, 0, 0));
@@ -1124,9 +1385,9 @@ public class MainActivity extends Activity {
         pressFx(dc);
         cr.addView(dc, lpm(WRAP, WRAP, 0, 10, 0, 0));
         cr.addView(tv(t("Chạm để sao chép", "Tap to copy"), 11, pal.sub, false), lpm(WRAP, WRAP, 0, 2, 0, 0));
-        TextView join = tv(t("Tham gia Discord", "Join Discord"), 14, pal.onBrush, true);
+        TextView join = tv(t("Tham gia Discord", "Join Discord"), 14, pal.onPrimary, true);
         join.setGravity(Gravity.CENTER);
-        join.setBackground(rounded(pal.dark ? 0xFF1F7A6C : 0xFF232B2E, 22, 0));
+        join.setBackground(rounded(pal.primary, 22, 0));
         join.setPadding(dp(8), dp(11), dp(8), dp(11));
         join.setOnClickListener(v -> openUrl(DISCORD_URL));
         pressFx(join);
@@ -1137,21 +1398,49 @@ public class MainActivity extends Activity {
         ver.setGravity(Gravity.CENTER);
         c.addView(ver, lpm(MATCH, WRAP, 0, 18, 0, 6));
 
-        page.addView(scroll(c), new LinearLayout.LayoutParams(MATCH, 0, 1f));
+        ScrollView sv = scroll(c);
+        scrollViews[2] = sv;
+        page.addView(sv, new FrameLayout.LayoutParams(MATCH, MATCH));
+        page.addView(pill);
         return page;
     }
 
-    private void methodChanged(boolean rootSwitch, boolean on) {
-        if (syncing) return;
-        syncing = true;
-        // exactly one of the two stays on
-        boolean useRoot = rootSwitch ? on : !on;
-        swRoot.setChecked(useRoot);
-        swShizuku.setChecked(!useRoot);
-        syncing = false;
-        sp.edit().putString("method", useRoot ? "root" : "shizuku").apply();
-        refreshHome();
-        Anim.swap(tvInfoMethod, dp(6), 0f);
+    /** "auto" | "root" | "shizuku". Mặc định tự động. */
+    private String method() {
+        String s = sp.getString("method", "auto");
+        return "root".equals(s) || "shizuku".equals(s) ? s : "auto";
+    }
+
+    private String methodName(String m) {
+        return "root".equals(m) ? "Root" : "shizuku".equals(m) ? "Shizuku" : t("Tự động", "Auto");
+    }
+
+    private void showMethodPicker(View anchor) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        final PopupWindow[] ref = new PopupWindow[1];
+        final String[] ids = {"auto", "root", "shizuku"};
+        final String[] subs = {t("Root nếu có, không thì Shizuku", "Root if available, else Shizuku"),
+                t("Cần quyền root", "Needs root access"), t("Cần cài ứng dụng Shizuku", "Requires the Shizuku app")};
+        for (int i = 0; i < 3; i++) {
+            final String id = ids[i];
+            boolean cur = id.equals(method());
+            LinearLayout t = new LinearLayout(this);
+            t.setOrientation(LinearLayout.VERTICAL);
+            t.addView(tv(methodName(id), 16, cur ? pal.accent : pal.text, cur));
+            t.addView(tv(subs[i], 11, pal.sub, false));
+            LinearLayout row = mxRow(t, cur);
+            row.setOnClickListener(x -> {
+                sp.edit().putString("method", id).apply();
+                tvMethodVal.setText(methodName(id));
+                refreshHome();
+                Anim.swap(tvMethodVal, dp(6), 0f);
+                Anim.swap(tvInfoMethod, dp(6), 0f);
+                Anim.dismiss(ref[0]);
+            });
+            c.addView(row);
+        }
+        ref[0] = showMxPopup(anchor, c, 240);
     }
 
     private View switchRow(int iconRes, String title, String sub, Switch sw) {
@@ -1172,13 +1461,19 @@ public class MainActivity extends Activity {
 
     private void styleSwitch(Switch s) {
         int[][] st = {{android.R.attr.state_checked}, {}};
-        s.setThumbTintList(new ColorStateList(st, new int[]{0xFFFFFFFF, 0xFFFFFFFF}));
+        s.setThumbTintList(new ColorStateList(st, new int[]{pal.onPrimary, 0xFFFFFFFF}));   // bật: nút ngược màu với track (trắng/đen thuần)
         s.setTrackTintList(new ColorStateList(st, new int[]{pal.accent, pal.swOff}));
     }
 
     /** Đổi theme: chụp giao diện hiện tại, tạo lại Activity, rồi mờ dần ảnh chụp để lộ theme mới. */
     private void switchTheme(String v) {
+        String oldPref = sp.getString("theme", "system");
+        if (v.equals(oldPref)) return;
+        boolean wasDark = isDark();
         sp.edit().putString("theme", v).apply();
+        boolean nowDark = isDark();
+        if (wasDark == nowDark) return;
+        saveScrollPositions();
         themeShot = null;
         try {
             View c = findViewById(android.R.id.content);
@@ -1204,7 +1499,11 @@ public class MainActivity extends Activity {
         root.addView(shot, new FrameLayout.LayoutParams(MATCH, MATCH));
         if (!Anim.on()) { root.removeView(shot); return; }
         shot.animate().alpha(0f).setStartDelay(80).setDuration(560).setInterpolator(Anim.STD)
-                .withEndAction(() -> root.removeView(shot)).start();
+                .withEndAction(() -> {
+                    root.removeView(shot);
+                    shot.setImageBitmap(null);
+                    bm.recycle();
+                }).start();
     }
 
     private RadioButton radio(String label) {
@@ -1229,13 +1528,15 @@ public class MainActivity extends Activity {
             boolean cur = code.equals(en ? "en" : "vi");
             LinearLayout row = mxRow(tv(names[i], 16, cur ? pal.accent : pal.text, cur), cur);
             row.setOnClickListener(x -> {
-                ref[0].dismiss();
+                Anim.dismiss(ref[0]);
                 if (code.equals(en ? "en" : "vi")) return;
                 sp.edit().putString("lang", code).apply();
+                saveScrollPositions();
                 // Chờ hiệu ứng đóng hộp thoại chạy xong (~130ms) rồi mới tạo lại màn hình.
                 // Gọi recreate() ngay sẽ hủy Activity khi animation làm mờ nền vẫn đang chạy trên cửa sổ đã bị gỡ -> app thoát.
                 scene.postDelayed(() -> {
                     if (isFinishing() || isDestroyed()) return;
+                    saveScrollPositions();
                     recreate();
                     overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
                 }, 300);
@@ -1270,7 +1571,7 @@ public class MainActivity extends Activity {
         return 0;
     }
 
-    private void checkUpdate(final boolean manual) {
+    private void checkUpdate(final boolean manual, final View anchor) {
         if (checking) return;
         checking = true;
         if (manual && tvUpdateStatus != null) tvUpdateStatus.setText(t("Đang kiểm tra…", "Checking…"));
@@ -1332,17 +1633,17 @@ public class MainActivity extends Activity {
                 String cur = appVersion();
                 if (tvUpdateStatus != null) tvUpdateStatus.setText(t("Phiên bản hiện tại: ", "Current version: ") + cur);
                 if (fe != null) {
-                    if (manual) infoDialog(t("Không kiểm tra được", "Couldn't check"),
+                    if (manual) showUpdateResult(anchor, t("Không kiểm tra được", "Couldn't check"),
                             t("Không kết nối được tới GitHub. Hãy kiểm tra mạng rồi thử lại.\n", "Could not reach GitHub. Check your connection and try again.\n") + fe,
                             null, null);
                     return;
                 }
                 if (cmpVer(fr, cur) > 0) {
-                    infoDialog(t("Có bản cập nhật mới", "Update available"),
+                    showUpdateResult(anchor, t("Có bản cập nhật mới", "Update available"),
                             t("Phiên bản mới: v", "New version: v") + fr + "\n" + t("Hiện tại: ", "Current: ") + cur,
                             t("Cập nhật", "Update"), () -> startUpdate(fu, fs));
                 } else if (manual) {
-                    infoDialog(t("Đã là bản mới nhất", "You're up to date"),
+                    showUpdateResult(anchor, t("Đã là bản mới nhất", "You're up to date"),
                             t("Bạn đang dùng ", "You are using ") + cur, null, null);
                 }
             });
@@ -1392,6 +1693,36 @@ public class MainActivity extends Activity {
         } catch (ActivityNotFoundException e) {
             Toast.makeText(this, t("Không mở được liên kết", "Can't open the link"), Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /**
+     * Kết quả kiểm tra cập nhật: popup cửa sổ nhỏ bám ngay nút "Kiểm tra". Không có nút bấm (kiểm tra ngầm
+     * lúc mở app) thì rơi về hộp thoại giữa màn hình.
+     */
+    private void showUpdateResult(View anchor, String head, String msg, String okLabel, Runnable ok) {
+        if (anchor == null || !anchor.isAttachedToWindow()) {
+            infoDialog(head, msg, okLabel, ok);
+            return;
+        }
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(20), dp(14), dp(20), dp(10));
+        TextView title = tv(head, 17, pal.text, true);
+        c.addView(title);
+        c.addView(tv(msg, 14, pal.sub, false), lpm(MATCH, WRAP, 0, 6, 0, 0));
+        final PopupWindow[] ref = new PopupWindow[1];
+        TextView close = mxButton(ok != null ? t("Để sau", "Later") : t("Đóng", "Close"), ok == null);
+        close.setOnClickListener(v -> Anim.dismiss(ref[0]));
+        LinearLayout btns;
+        if (ok != null) {
+            TextView go = mxButton(okLabel, true);
+            go.setOnClickListener(v -> { Anim.dismiss(ref[0]); ok.run(); });
+            btns = mxButtons(close, go);
+        } else {
+            btns = mxButtons(close);
+        }
+        c.addView(btns, lpm(MATCH, WRAP, 0, 14, 0, 0));
+        ref[0] = showMxPopup(anchor, c, 250);
     }
 
     /** Hộp thoại thông báo: có okLabel thì hiện thêm nút hành động bên cạnh nút Đóng. */
@@ -1529,17 +1860,13 @@ public class MainActivity extends Activity {
             View row = getChildAt(n - 1);
             int w;
             int h;
-            if (vertical) {
-                row.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
-                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
-                w = row.getMeasuredWidth();
-                h = row.getMeasuredHeight();
-            } else {
-                w = resolveSize(MeasureSpec.getSize(wSpec), wSpec);
-                row.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
-                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
-                h = row.getMeasuredHeight();
-            }
+            // kích thước do hàng nút quyết định (mục nav có bề rộng cố định), không vượt chỗ cha cho phép
+            row.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            w = row.getMeasuredWidth();
+            h = row.getMeasuredHeight();
+            int avail = MeasureSpec.getSize(wSpec);
+            if (!vertical && MeasureSpec.getMode(wSpec) != MeasureSpec.UNSPECIFIED && avail > 0) w = Math.min(w, avail);
             setMeasuredDimension(w, h);
             for (int i = 0; i < n - 1; i++) {
                 View c = getChildAt(i);
@@ -1600,7 +1927,7 @@ public class MainActivity extends Activity {
             }
             r.addView(item, rail
                     ? new LinearLayout.LayoutParams(dp(RAIL_ITEM_W), dp(RAIL_ITEM_H))
-                    : new LinearLayout.LayoutParams(0, WRAP, 1f));
+                    : new LinearLayout.LayoutParams(dp(NAV_ITEM_W), WRAP));
         }
         return r;
     }
@@ -1621,7 +1948,10 @@ public class MainActivity extends Activity {
     private void glassFailed(Throwable e) {
         Log.w(TAG, "liquid glass disabled after error", e);
         sp.edit().putBoolean(Glass.PREF_BROKEN, true).apply();
-        if (!isFinishing() && !isDestroyed()) recreate();
+        if (!isFinishing() && !isDestroyed()) {
+            saveScrollPositions();
+            recreate();
+        }
     }
 
     private View buildNav() {
@@ -1662,7 +1992,7 @@ public class MainActivity extends Activity {
         navHost.addView(indicator, new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.START));
 
         navRow = makeNavRow(false);
-        navHost.addView(navRow, new FrameLayout.LayoutParams(rail ? WRAP : MATCH, WRAP));   // phải là con cuối (PillHost dựa vào đó)
+        navHost.addView(navRow, new FrameLayout.LayoutParams(WRAP, WRAP));   // phải là con cuối (PillHost dựa vào đó)
         navHost.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> placeIndicator());
         return navHost;
     }
@@ -1678,13 +2008,7 @@ public class MainActivity extends Activity {
             Anim.slide(indicator, p, animate);
             return;
         }
-        indicator.animate().cancel();
-        if (animate && Anim.on()) {
-            indicator.animate().setListener(null).setStartDelay(0).setDuration(280)
-                    .setInterpolator(Anim.STD).translationY(p).start();
-        } else {
-            indicator.setTranslationY(p);
-        }
+        Anim.slideAxis(indicator, p, true, animate);
     }
 
     /** Khớp ô chọn với kích thước một mục nav; chỉ chạy lại khi kích thước thật sự đổi. */
@@ -1786,6 +2110,14 @@ public class MainActivity extends Activity {
         return p;
     }
 
+    /** Mã vùng ngắn của từng gói game, hiện trên avatar khi chưa cài game. */
+    private static String gameRegion(String p) {
+        if ("com.netease.yyvn".equals(p)) return "VN";
+        if ("com.netease.yyslshmt".equals(p)) return "TW";
+        if (p != null && p.contains("yyslscn")) return "CN";
+        return "GL";
+    }
+
     /** "v1.2.3" when the game is installed, otherwise null. */
     private String gameVersion(String p) {
         try {
@@ -1821,9 +2153,9 @@ public class MainActivity extends Activity {
                 pkg = pk;
                 sp.edit().putString("pkg", pk).apply();
                 refreshHome();
-                for (View tvw : new View[]{tvGameName, tvGameSel, tvInfoVer, tvInfoDir}) Anim.swap(tvw, dp(6), 0f);
+                for (View tvw : new View[]{ivGameIcon, tvGameRegion, tvGameName, tvGameSel, tvInfoVer, tvInfoDir}) Anim.swap(tvw, dp(6), 0f);
                 refreshFonts(true);
-                ref[0].dismiss();
+                Anim.dismiss(ref[0]);
             });
             c.addView(row);
         }
@@ -1847,7 +2179,7 @@ public class MainActivity extends Activity {
         TextView b = tv(label, 15, primary ? pal.onBrush : pal.text, true);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(8), dp(14), dp(8), dp(14));
-        b.setBackground(rounded(primary ? pal.mxPrimary : pal.mxBtn, 16, 0));
+        b.setBackground(rounded(primary ? pal.mxPrimary : pal.mxBtn, 20, 0));
         pressFx(b);
         return b;
     }
@@ -1869,7 +2201,7 @@ public class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(22), dp(14), dp(18), dp(14));
+        row.setPadding(dp(20), dp(12), dp(16), dp(12));
         row.addView(label, new LinearLayout.LayoutParams(0, WRAP, 1f));
         if (cur) row.addView(tv("✓", 18, pal.accent, true));
         pressFx(row);
@@ -1885,33 +2217,114 @@ public class MainActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(0, dp(8), 0, dp(8));
+        // Nền đặc mặc định; GlassDialog.applyToPopup sẽ thay bằng kính nếu API >= 33 và đang bật glass
+        box.setBackground(rounded(pal.dialog, 28, pal.stroke));
         ScrollView sv = new ScrollView(this);
         sv.setVerticalScrollBarEnabled(false);
         sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
         sv.addView(content, new ViewGroup.LayoutParams(MATCH, WRAP));
         box.addView(sv, new LinearLayout.LayoutParams(MATCH, WRAP));
 
-        int maxW = (int) (dm.widthPixels * 0.78f);
-        int maxH = (int) (dm.heightPixels * 0.55f);
+        // Kích thước gọn: không quá 72% bề ngang / 320dp và không quá 42% chiều cao màn hình
+        int maxW = Math.min((int) (dm.widthPixels * 0.72f), dp(320));
+        int capH = (int) (dm.heightPixels * 0.42f);
         box.measure(View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.AT_MOST),
-                View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST));
+                View.MeasureSpec.makeMeasureSpec(capH, View.MeasureSpec.AT_MOST));
         int w = Math.min(maxW, Math.max(dp(minWidthDp), box.getMeasuredWidth()));
-        int h = Math.min(maxH, box.getMeasuredHeight());
+
+        // Vị trí: bám sát nút bấm, mở xuống nếu đủ chỗ, không thì mở lên; chiều cao bị giới hạn theo chỗ trống
+        int[] loc = new int[2];
+        int[] scr = new int[2];
+        anchor.getLocationInWindow(loc);
+        anchor.getLocationOnScreen(scr);
+        android.graphics.Rect vis = new android.graphics.Rect();
+        getWindow().getDecorView().getWindowVisibleDisplayFrame(vis);
+        int gap = dp(6), edge = dp(12);
+        int below = vis.bottom - (scr[1] + anchor.getHeight()) - gap - edge;
+        int above = scr[1] - vis.top - gap - edge;
+        int want = Math.min(box.getMeasuredHeight(), capH);
+        boolean down = below >= want || below >= above;
+        int h = Math.max(dp(64), Math.min(want, down ? below : above));
+        int y = down ? loc[1] + anchor.getHeight() + gap : loc[1] - h - gap;
+        // ngang: nút nằm nửa phải màn hình thì căn mép phải popup theo mép phải nút, ngược lại căn mép trái
+        boolean right = scr[0] + anchor.getWidth() / 2f > dm.widthPixels / 2f;
+        int x = right ? loc[0] + anchor.getWidth() - w : loc[0];
+        int dx = scr[0] - loc[0];                       // đổi về toạ độ màn hình để kẹp trong màn hình
+        x = Math.max(edge - dx, Math.min(x, dm.widthPixels - w - edge - dx));
 
         PopupWindow pw = new PopupWindow(box, w, h, true);
-        pw.setBackgroundDrawable(rounded(pal.dialog, 28, 0));
+        pw.setBackgroundDrawable(new ColorDrawable(0));
         pw.setOutsideTouchable(true);
         pw.setElevation(dp(12));
-        pw.showAsDropDown(anchor, -dp(12), -dp(8), Gravity.END);
-        if (Anim.on()) {
-            box.setPivotX(w);
-            box.setPivotY(0f);
-            box.setScaleX(0.88f);
-            box.setScaleY(0.88f);
-            box.setAlpha(0f);
-            box.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200).start();
+        // chạm ra ngoài thì thu popup về nút rồi mới đóng (thay vì biến mất ngay)
+        pw.setTouchInterceptor((tv, ev) -> {
+            boolean outside = ev.getAction() == MotionEvent.ACTION_OUTSIDE
+                    || (ev.getAction() == MotionEvent.ACTION_DOWN
+                    && (ev.getX() < 0 || ev.getY() < 0 || ev.getX() >= tv.getWidth() || ev.getY() >= tv.getHeight()));
+            if (outside) Anim.dismiss(pw);
+            return outside;
+        });
+
+        // Áp Liquid Glass vào popup (chỉ khi đang bật và API 13+)
+        if (Glass.enabled(sp) && scene != null) {
+            GlassDialog.applyToPopup(pw, box, scene, pal, dm.density);
         }
+
+        pw.showAtLocation(anchor.getRootView(), Gravity.TOP | Gravity.START, x, y);
+        backdropBlur(true);
+        pw.setOnDismissListener(() -> backdropBlur(false));
+        // menu popup không có dim mặc định: thêm lớp tối nhẹ phía sau cùng với lớp mờ
+        try {
+            View root = box.getRootView();
+            WindowManager.LayoutParams wl = (WindowManager.LayoutParams) root.getLayoutParams();
+            wl.flags |= WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+            wl.dimAmount = 0.22f;
+            ((WindowManager) getSystemService(WINDOW_SERVICE)).updateViewLayout(root, wl);
+        } catch (RuntimeException ignored) {
+        }
+        // phóng ra từ chính nút đã bấm: pivot = tâm nút (theo toạ độ popup), cạnh gần nút nhất
+        float pivX = Math.max(0f, Math.min(w, scr[0] + anchor.getWidth() / 2f - (x + dx)));
+        Anim.popupIn(box, pivX, down ? 0f : h);
         return pw;
+    }
+
+    // ---- làm mờ nền phía sau popup / hộp thoại để người dùng tập trung vào popup
+
+    private int backdropBlurs;
+    private float backdropRadius;
+    private ValueAnimator backdropAnim;
+
+    /** Bật/tắt (đếm lồng nhau) lớp mờ nhẹ phủ lên toàn bộ màn hình app. Android 12+; máy cũ chỉ có lớp dim. */
+    private void backdropBlur(boolean on) {
+        // Chỉ làm mờ scene (nền + các trang). Không đụng tới thanh nav: nó vẽ viền/ô kính/bóng tràn ra ngoài khung view,
+        // bị RenderEffect cắt cụt và kéo giãn pixel mép thành các dải sáng. Thanh nav vẫn tối đi nhờ lớp dim của cửa sổ popup.
+        if (Build.VERSION.SDK_INT < 31) return;
+        backdropBlurs = Math.max(0, backdropBlurs + (on ? 1 : -1));
+        final float to = backdropBlurs > 0 ? dp(4) : 0f;
+        if (scene == null) return;
+        if (backdropAnim != null) backdropAnim.cancel();
+        if (!Anim.on()) {
+            backdropRadius = to;
+            applyBackdropBlur(scene, to);
+            return;
+        }
+        backdropAnim = ValueAnimator.ofFloat(backdropRadius, to);
+        backdropAnim.setDuration(on ? 240 : 160);
+        backdropAnim.addUpdateListener(a -> {
+            backdropRadius = (float) a.getAnimatedValue();
+            applyBackdropBlur(scene, backdropRadius);
+        });
+        backdropAnim.start();
+    }
+
+    @android.annotation.TargetApi(31)
+    private static void applyBackdropBlur(View target, float radius) {
+        if (target == null) return;
+        try {
+            target.setRenderEffect(radius < 0.5f ? null
+                    : RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP));
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private Dialog makeDialog(View content, boolean cancelable) {
@@ -1923,8 +2336,8 @@ public class MainActivity extends Activity {
         d.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        // Miuix: bo 28dp, không viền; giữ nền mờ cũ của app
-        box.setBackground(rounded(pal.dialog, 28, 0));
+        // Miuix: bo 28dp, viền mảnh mờ (GlassDialog thay thế nền đặc bằng kính khi API >= 33)
+        box.setBackground(rounded(pal.dialog, 28, pal.stroke));
         box.setPadding(dp(24), dp(24), dp(24), dp(24));
         // Nội dung cuộn được: xoay ngang hoặc máy thấp thì hộp thoại cao hơn màn hình, nút ở cuối không được bị cắt
         ScrollView sv = new ScrollView(this);
@@ -1937,11 +2350,19 @@ public class MainActivity extends Activity {
         Window w = d.getWindow();
         if (w != null) {
             w.setBackgroundDrawable(new ColorDrawable(0));
-            w.setDimAmount(0.4f);
+            w.setDimAmount(Glass.enabled(sp) ? 0.28f : 0.4f);
             // 88% bề ngang, nhưng không quá 420dp để không bành ra ở chế độ ngang / tablet
             w.setLayout(Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.88f), dp(420)), WRAP);
         }
-        d.setOnShowListener(x -> Anim.dialogIn(d, box, fadeDim));
+        // Áp Liquid Glass nền kính lên dialog (chỉ khi đang bật và API 13+)
+        if (Glass.enabled(sp) && scene != null) {
+            GlassDialog.applyToDialog(d, box, scene, pal, getResources().getDisplayMetrics().density);
+        }
+        d.setOnShowListener(x -> {
+            backdropBlur(true);
+            Anim.dialogIn(d, box, fadeDim);
+        });
+        d.setOnDismissListener(x -> backdropBlur(false));
         return d;
     }
 
@@ -2098,7 +2519,8 @@ public class MainActivity extends Activity {
 
     private void task(String title, String okMsg, Job job, Runnable onOk) {
         final String pk = pkg;
-        final boolean useRoot = swRoot.isChecked();
+        final String method = method();
+        final boolean useRoot = "root".equals(method);
         final boolean autoStop = sp.getBoolean("autostop", true);
         synchronized (logBuf) { logBuf.setLength(0); }
         runningTitle = title;
@@ -2107,7 +2529,7 @@ public class MainActivity extends Activity {
             int state = 0;
             String msg = okMsg;
             try {
-                Backend b = chooseBackend(useRoot, pk);
+                Backend b = chooseBackend(method, pk);
                 if (b == null) {
                     state = 2;
                     msg = lastLine();
@@ -2150,12 +2572,15 @@ public class MainActivity extends Activity {
     }
 
     /** The chosen method (Root or Shizuku); the game's provider only as a fallback. Returns null (after logging why) when nothing works. */
-    private Backend chooseBackend(boolean useRoot, String pkg) {
-        if (useRoot) {
+    private Backend chooseBackend(String method, String pkg) {
+        boolean tryRoot = !"shizuku".equals(method);
+        boolean tryShizuku = !"root".equals(method);
+        if (tryRoot) {
             RootBackend r = new RootBackend(this);
             if (r.available()) return r;
             log(t("Không dùng được root (su bị từ chối hoặc không có).", "Root is not available (su was denied or is missing)."));
-        } else {
+        }
+        if (tryShizuku) {
             ShizukuBackend s = new ShizukuBackend(this);
             String why = s.prepare();
             if (why == null) return s;
