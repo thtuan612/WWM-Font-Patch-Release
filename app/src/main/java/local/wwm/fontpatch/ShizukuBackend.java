@@ -59,9 +59,34 @@ final class ShizukuBackend extends ShellBackend {
                     "This Shizuku version no longer supports the current method. Use Root instead or update the app."));
         }
         Process p = (Process) m.invoke(null, new Object[]{new String[]{"sh", "-c", cmd}, null, null});
+        // Đọc stderr song song (tránh nghẽn pipe). KHÔNG dùng waitFor(timeout): ShizukuRemoteProcess.exitValue() ném
+        // lỗi "process hasn't exited" khi tiến trình chưa kết thúc, mà bản mặc định của waitFor(timeout) chỉ bắt
+        // IllegalThreadStateException nên lỗi nổ ra ngoài. Dùng waitFor() chặn + đồng hồ canh để huỷ khi quá hạn.
+        final StringBuilder errBuf = new StringBuilder();
+        final Process fp = p;
+        Thread errT = new Thread(() -> {
+            try { errBuf.append(readAll(fp.getErrorStream())); } catch (Exception ignored) { }
+        });
+        errT.start();
+        final boolean[] timedOut = {false};
+        Thread dog = new Thread(() -> {
+            try { Thread.sleep(120000); timedOut[0] = true; fp.destroy(); } catch (InterruptedException ignored) { }
+        });
+        dog.setDaemon(true);
+        dog.start();
         String out = readAll(p.getInputStream());
-        String err = readAll(p.getErrorStream());
-        if (!p.waitFor(120, TimeUnit.SECONDS)) { p.destroy(); throw new IOException(Lang.t("Shizuku quá thời gian chờ", "Shizuku timed out")); }
-        return new Result(p.exitValue(), out + err);
+        int code = -1;
+        for (int i = 0; ; i++) {
+            try { code = p.waitFor(); break; }
+            catch (InterruptedException e) { throw e; }
+            catch (RuntimeException e) {                  // tiến trình báo chưa thoát: chờ rồi hỏi lại
+                if (timedOut[0] || i > 600) break;
+                Thread.sleep(100);
+            }
+        }
+        dog.interrupt();
+        errT.join(2000);
+        if (timedOut[0]) throw new IOException(Lang.t("Shizuku quá thời gian chờ", "Shizuku timed out"));
+        return new Result(code, out + errBuf);
     }
 }

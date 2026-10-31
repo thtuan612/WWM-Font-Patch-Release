@@ -1596,26 +1596,29 @@ public class MainActivity extends Activity {
                 }
                 c.disconnect();
                 JSONObject j = new JSONObject(bo.toString("UTF-8"));
-                // tên file APK: app-released-<phiên bản>.apk
+                // phiên bản lấy từ tag release (v1.1.5 -> 1.1.5); APK là asset .apk đầu tiên (wwm-fontpatch-<ver>.apk)
+                String tag = j.optString("tag_name", "").trim();
+                if (tag.matches("[vV]?\\d+(\\.\\d+)*.*")) remote = tag.replaceFirst("^[vV]", "");
                 JSONArray as = j.optJSONArray("assets");
-                Pattern ap = Pattern.compile("^app-released-(.+)\\.apk$");
                 if (as != null) {
                     for (int i = 0; i < as.length(); i++) {
                         JSONObject a = as.getJSONObject(i);
-                        Matcher m = ap.matcher(a.optString("name"));
-                        if (m.find()) {
-                            remote = m.group(1);
-                            String du = a.optString("browser_download_url", "");
-                            if (UpdateGuard.isTrustedStartUrl(du)) {        // chỉ tải từ release của repo này
-                                url = du;
-                                sha = UpdateGuard.parseSha256(a.optString("digest", null));
-                            }
-                            break;
+                        String an = a.optString("name");
+                        if (!an.toLowerCase(Locale.ROOT).endsWith(".apk")) continue;
+                        if (remote == null) {
+                            Matcher m = Pattern.compile("(\\d+(?:\\.\\d+)+)\\.apk$").matcher(an);
+                            if (m.find()) remote = m.group(1);
                         }
+                        String du = a.optString("browser_download_url", "");
+                        if (UpdateGuard.isTrustedStartUrl(du)) {            // chỉ tải từ release của repo này
+                            url = du;
+                            sha = UpdateGuard.parseSha256(a.optString("digest", null));
+                        }
+                        break;
                     }
                 }
-                if (remote == null) {                       // dự phòng: lấy từ tiêu đề "Latest build vX"
-                    Matcher m = Pattern.compile("v(\\S+)\\s*$").matcher(j.optString("name"));
+                if (remote == null) {                       // dự phòng: số phiên bản trong tên release
+                    Matcher m = Pattern.compile("v?(\\d+(?:\\.\\d+)+)\\s*$").matcher(j.optString("name"));
                     if (m.find()) remote = m.group(1);
                 }
                 if (remote == null) throw new Exception("no version found");
