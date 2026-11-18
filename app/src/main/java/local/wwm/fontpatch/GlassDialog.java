@@ -170,7 +170,8 @@ final class GlassDialog {
 
             try {
                 lensShader = Glass.newLens(false);
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException e) {
+                android.util.Log.w("FontPatch", "lens shader không dùng được", e);
                 lensShader = null;
             }
 

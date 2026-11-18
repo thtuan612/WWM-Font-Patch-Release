@@ -16,6 +16,8 @@ final class Pal {
     int bgTop, bgBottom;
     /** Primary button fill, its label colour, and the quiet "tonal" button fill. */
     int primary, onPrimary, tonal;
+    /** Trạng thái "khả dụng" (xanh lá). */
+    int ok;
 
     static final int SEAL_RED = 0xFFC8332A;
 
@@ -43,6 +45,7 @@ final class Pal {
             p.dialog    = 0xFA161616;   // dark OLED dialog
             p.logoTint  = 0xFFFFFFFF;   // crisp white logo
             p.swOff     = 0x66808080;   // neutral switch track
+            p.ok        = 0xFF4ADE80;   // green on black
             p.mxSurface = 0xFF161616;
             p.mxField   = 0xFF242424;
             p.mxBtn     = 0xFF2A2A2A;
@@ -69,6 +72,7 @@ final class Pal {
             p.dialog    = 0xFAFFFFFF;
             p.logoTint  = 0xFF000000;
             p.swOff     = 0x55808080;
+            p.ok        = 0xFF15803D;   // green on white
             p.mxSurface = 0xFFFFFFFF;
             p.mxField   = 0xFFF2F2F2;
             p.mxBtn     = 0xFFEBEBEB;

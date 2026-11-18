@@ -95,7 +95,8 @@ final class Patcher {
                 }
             } catch (IllegalStateException e) {
                 throw e;
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                android.util.Log.w("FontPatch", "kiểm tra sidecar không khả dụng", e);
                 // Backend không hỗ trợ kiểm tra sidecar; tiếp tục để giữ tương thích.
             }
         }

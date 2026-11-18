@@ -29,7 +29,8 @@ final class FontStore {
         try {
             String[] a = ctx.getAssets().list("fonts");
             if (a != null) for (String s : a) if (s.toLowerCase().endsWith(".ttf")) l.add(s.substring(0, s.length() - 4));
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            android.util.Log.w("FontPatch", "liệt kê font đóng gói thất bại", e);
         }
         File[] fs = dir.listFiles();
         if (fs != null) for (File f : fs) {
@@ -41,6 +42,30 @@ final class FontStore {
         }
         java.util.Collections.sort(l);
         return l;
+    }
+
+    /** Tên các font người dùng đã thêm (files/Fonts); không gồm font đóng gói sẵn trong app. */
+    List<String> userNames() {
+        List<String> l = new ArrayList<>();
+        File[] fs = dir.listFiles();
+        if (fs != null) for (File f : fs) {
+            String n = f.getName();
+            if (f.isFile() && n.toLowerCase().endsWith(".ttf")) l.add(n.substring(0, n.length() - 4));
+        }
+        java.util.Collections.sort(l);
+        return l;
+    }
+
+    /** Kích thước file font người dùng đã thêm, -1 nếu không có. */
+    long userSize(String name) {
+        File f = userFile(name);
+        return f.isFile() ? f.length() : -1;
+    }
+
+    /** Xoá font người dùng đã thêm khỏi app (không đụng tới font đã cài vào game). */
+    boolean delete(String name) {
+        File f = userFile(name);
+        return f.isFile() && f.delete();
     }
 
     void add(InputStream in, String fileName) throws IOException {

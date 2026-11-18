@@ -42,7 +42,8 @@ final class ProviderBackend implements Backend {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            android.util.Log.w("FontPatch", "dò authority provider thất bại, dùng mặc định", e);
         }
         return pkg + ".widget_file_provider";
     }

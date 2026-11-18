@@ -47,6 +47,7 @@ public final class HotfixEditor {
                 }
             }
         } catch (Exception ignored) {
+            // lớp thuần Java (chạy được ngoài Android): không có Log, trả null cho người gọi tự xử lý
         }
         return null;
     }
